@@ -15,7 +15,7 @@
 
 ## Comments
 
-**Implementation decisions to confirm:**
+**Implementation decisions, confirmed by the user:**
 
 - The Overview model also gives the count of all Todos per Note. The progress ring needs it to show the done share and the green ✓.
 - The Note title comes only from a `# ` heading at the top level of the body. A heading inside a list item or a block quote does not count.
