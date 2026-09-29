@@ -83,7 +83,7 @@ Planner is a local, read-only web app. It reads my Collection from disk at each 
 
 ## Further Notes
 
-- **Open point: the look of the UI.** The layout and style of the Overview and the Note view are not decided yet. The first ticket is a `/prototype` for this question. The implementation tickets for the pages depend on its result.
+- **The look of the UI is decided.** Ticket 01 records it: "Bold day bands" for the Overview and "Gradient hero" for the Note view, built with Tailwind CSS and its typography plugin. The prototype is on the `prototype/ui` branch.
 - **Assumptions to confirm**:
   - A filename with an invalid date prefix, for example `2026-13-40-x.md`, gives an Undated Note.
   - A missing or wrong Collection path gives a clear error page that names the environment variable.
