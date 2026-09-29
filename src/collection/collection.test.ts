@@ -1,28 +1,33 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CollectionPathError, createNote, getAsset, getNote, getOverview, updateNote } from "./collection";
+import postgres from "postgres";
+import { beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { db } from "../db/client";
+import { notes } from "../db/schema";
+import { setupTestDatabase } from "../db/test-database";
+import { ensureUser } from "../db/users";
+import { createNote, exportNotes, getAsset, getNote, getOverview, importAsset, importNote, updateNote } from "./collection";
 
-let collection: string;
+setupTestDatabase();
+
+let owner: string;
+let otherOwner: string;
 
 beforeEach(async () => {
-  collection = await mkdtemp(join(tmpdir(), "planner-collection-"));
+  owner = await ensureUser("me@example.com");
+  otherOwner = await ensureUser("other@example.com");
 });
 
-afterEach(async () => {
-  await rm(collection, { recursive: true, force: true });
-});
+async function addNote(path: string, markdown = "", ownerId = owner) {
+  expect(await importNote(ownerId, path, markdown)).toBe("created");
+}
 
-async function addFile(path: string, content = "") {
-  const file = join(collection, path);
-  await mkdir(dirname(file), { recursive: true });
-  await writeFile(file, content);
+async function addAsset(path: string, content = "", ownerId = owner) {
+  expect(await importAsset(ownerId, path, Buffer.from(content))).toBe("created");
 }
 
 async function locations() {
-  const groups = await getOverview(collection);
+  const groups = await getOverview(owner);
   return groups.map(({ date, notes }) => ({
     date,
     notes: notes.map(({ path, filename }) => ({ path, filename })),
@@ -30,13 +35,21 @@ async function locations() {
 }
 
 async function onlyNote() {
-  const [{ notes }] = await getOverview(collection);
+  const [{ notes }] = await getOverview(owner);
   return notes[0];
+}
+
+async function content(path: string) {
+  return (await exportNotes(owner)).find((note) => note.path === path)?.markdown;
+}
+
+async function paths() {
+  return (await exportNotes(owner)).map((note) => note.path).sort();
 }
 
 describe("getOverview", () => {
   it("puts a dated Note in the group of its Note date", async () => {
-    await addFile("2026-09-29-standup.md");
+    await addNote("2026-09-29-standup");
 
     expect(await locations()).toEqual([
       {
@@ -47,7 +60,7 @@ describe("getOverview", () => {
   });
 
   it("reads Notes in all subfolders, with the Note path relative to the Collection", async () => {
-    await addFile("work/deep/2026-09-29-retro.md");
+    await addNote("work/deep/2026-09-29-retro");
 
     expect(await locations()).toEqual([
       {
@@ -58,11 +71,11 @@ describe("getOverview", () => {
   });
 
   it("groups Notes per Note date, newest day first, in filename order in one day", async () => {
-    await addFile("2026-09-28-weekend.md");
-    await addFile("work/2026-09-29-standup.md");
-    await addFile("2026-09-29-groceries.md");
-    await addFile("reading/2026-09-29-book.md");
-    await addFile("2025-12-31-year-end.md");
+    await addNote("2026-09-28-weekend");
+    await addNote("work/2026-09-29-standup");
+    await addNote("2026-09-29-groceries");
+    await addNote("reading/2026-09-29-book");
+    await addNote("2025-12-31-year-end");
 
     expect(await locations()).toEqual([
       {
@@ -85,13 +98,13 @@ describe("getOverview", () => {
   });
 
   it("puts Notes without a valid Note date in a last Undated group, in filename order", async () => {
-    await addFile("ideas.md");
-    await addFile("2026-13-40-bad-month.md");
-    await addFile("2026-02-30-no-such-day.md");
-    await addFile("2026-09-291-too-many-digits.md");
-    await addFile("2024-02-29-leap-day.md");
-    await addFile("2026-09-29.md");
-    await addFile("reading/Books.md");
+    await addNote("ideas");
+    await addNote("2026-13-40-bad-month");
+    await addNote("2026-02-30-no-such-day");
+    await addNote("2026-09-291-too-many-digits");
+    await addNote("2024-02-29-leap-day");
+    await addNote("2026-09-29");
+    await addNote("reading/Books");
 
     expect(await locations()).toEqual([
       {
@@ -115,40 +128,33 @@ describe("getOverview", () => {
     ]);
   });
 
-  it("skips dot-files, dot-folders and files that are not .md", async () => {
-    await addFile("2026-09-29-standup.md");
-    await addFile(".2026-09-29-hidden.md");
-    await addFile(".obsidian/2026-09-29-workspace.md");
-    await addFile("work/.git/2026-09-29-head.md");
-    await addFile("2026-09-29-diagram.png");
-    await addFile("2026-09-29-draft.markdown");
+  it("lists only the Notes of the Owner", async () => {
+    await addNote("2026-09-29-standup");
+    await addNote("2026-09-29-secret", "", otherOwner);
+    await addNote("2026-09-29-standup", "# Other standup", otherOwner);
 
-    expect(await locations()).toEqual([
+    expect(await getOverview(owner)).toEqual([
       {
         date: "2026-09-29",
-        notes: [{ path: "2026-09-29-standup", filename: "2026-09-29-standup.md" }],
+        notes: [
+          { path: "2026-09-29-standup", filename: "2026-09-29-standup.md", title: "2026-09-29-standup", openTodoCount: 0, todoCount: 0 },
+        ],
       },
     ]);
   });
 
-  it.each([
-    ["not set", () => undefined],
-    ["empty", () => ""],
-    ["relative", () => "notes"],
-    ["missing", () => join(collection, "missing")],
-    ["a file", () => join(collection, "2026-09-29-standup.md")],
-  ])("rejects a Collection path that is %s", async (_, collectionPath) => {
-    await addFile("2026-09-29-standup.md");
+  it("gives no groups for an Owner without Notes", async () => {
+    await addNote("2026-09-29-standup", "", otherOwner);
 
-    await expect(getOverview(collectionPath())).rejects.toThrow(CollectionPathError);
+    expect(await getOverview(owner)).toEqual([]);
   });
 
   it("shows a new Note and drops a deleted Note at the next call", async () => {
-    await addFile("2026-09-28-old.md");
-    await getOverview(collection);
+    await addNote("2026-09-28-old");
+    await getOverview(owner);
 
-    await addFile("2026-09-29-new.md");
-    await unlink(join(collection, "2026-09-28-old.md"));
+    await addNote("2026-09-29-new");
+    await db().delete(notes).where(eq(notes.path, "2026-09-28-old"));
 
     expect(await locations()).toEqual([
       {
@@ -160,8 +166,8 @@ describe("getOverview", () => {
 
   describe("Note title", () => {
     it("is the text of the first # heading after the frontmatter", async () => {
-      await addFile(
-        "2026-09-29-standup.md",
+      await addNote(
+        "2026-09-29-standup",
         ["---", "title: Not this", "---", "", "Intro text.", "", "## Agenda", "", "# Daily *standup*", "", "# Second"].join("\n"),
       );
 
@@ -169,25 +175,25 @@ describe("getOverview", () => {
     });
 
     it("falls back to the filename without .md and keeps the date prefix", async () => {
-      await addFile("work/2026-09-29-standup.md", "## Only a sub-heading\n\nSome text.");
+      await addNote("work/2026-09-29-standup", "## Only a sub-heading\n\nSome text.");
 
       expect((await onlyNote()).title).toBe("2026-09-29-standup");
     });
 
     it("ignores a # line inside a code block or the frontmatter", async () => {
-      await addFile("ideas.md", ["---", "# not: a heading", "---", "```sh", "# a shell comment", "```"].join("\n"));
+      await addNote("ideas", ["---", "# not: a heading", "---", "```sh", "# a shell comment", "```"].join("\n"));
 
       expect((await onlyNote()).title).toBe("ideas");
     });
 
     it("skips an empty # heading and a # heading inside a list or a block quote", async () => {
-      await addFile("ideas.md", ["#", "", "- # In a list", "", "> # In a quote", "", "Real title", "==="].join("\n"));
+      await addNote("ideas", ["#", "", "- # In a list", "", "> # In a quote", "", "Real title", "==="].join("\n"));
 
       expect((await onlyNote()).title).toBe("Real title");
     });
 
     it("drops inline HTML and image alt text, and skips TOML frontmatter", async () => {
-      await addFile("ideas.md", ["+++", "title = 'x'", "+++", "# Plan <b>B</b> ![logo](logo.png) `v2`"].join("\n"));
+      await addNote("ideas", ["+++", "title = 'x'", "+++", "# Plan <b>B</b> ![logo](logo.png) `v2`"].join("\n"));
 
       expect((await onlyNote()).title).toBe("Plan B v2");
     });
@@ -195,8 +201,8 @@ describe("getOverview", () => {
 
   describe("Open Todo count", () => {
     it("counts Open Todos at all nesting levels, and all Todos", async () => {
-      await addFile(
-        "2026-09-29-standup.md",
+      await addNote(
+        "2026-09-29-standup",
         [
           "- [ ] Top open",
           "- [x] Top done",
@@ -215,8 +221,8 @@ describe("getOverview", () => {
     });
 
     it("skips checkboxes inside code blocks", async () => {
-      await addFile(
-        "2026-09-29-standup.md",
+      await addNote(
+        "2026-09-29-standup",
         ["- [ ] Real", "", "```md", "- [ ] Example", "- [x] Example", "```", "", "    - [ ] Indented code"].join("\n"),
       );
 
@@ -224,7 +230,7 @@ describe("getOverview", () => {
     });
 
     it("is zero for a Note without Todos", async () => {
-      await addFile("2026-09-29-standup.md", "# Standup\n\n- Just a list");
+      await addNote("2026-09-29-standup", "# Standup\n\n- Just a list");
 
       expect(await onlyNote()).toMatchObject({ openTodoCount: 0, todoCount: 0 });
     });
@@ -233,9 +239,9 @@ describe("getOverview", () => {
 
 describe("getNote", () => {
   it("gives the Note title and the Note content as HTML for a Note path", async () => {
-    await addFile("work/2026-09-29-standup.md", "# Standup\n\nSome *text*.");
+    await addNote("work/2026-09-29-standup", "# Standup\n\nSome *text*.");
 
-    expect(await getNote(collection, "work/2026-09-29-standup")).toMatchObject({
+    expect(await getNote(owner, "work/2026-09-29-standup")).toMatchObject({
       path: "work/2026-09-29-standup",
       filename: "2026-09-29-standup.md",
       date: "2026-09-29",
@@ -245,12 +251,12 @@ describe("getNote", () => {
   });
 
   it("renders GFM tables, code blocks and task lists", async () => {
-    await addFile(
-      "ideas.md",
+    await addNote(
+      "ideas",
       ["| Day | Plan |", "| --- | :-: |", "| Mon | Gym |", "", "```ts", "const a = 1 < 2;", "```"].join("\n"),
     );
 
-    const html = (await getNote(collection, "ideas"))?.html ?? "";
+    const html = (await getNote(owner, "ideas"))?.html ?? "";
 
     expect(html).toContain("<table>");
     expect(html).toMatch(/<th[^>]*>Plan<\/th>/);
@@ -259,9 +265,9 @@ describe("getNote", () => {
   });
 
   it("shows the state of each checkbox, with the offset of its mark in the file", async () => {
-    await addFile("ideas.md", ["- [ ] Open", "- [x] Done", "  - [ ] Nested", "", "> 1. [X] Quoted"].join("\n"));
+    await addNote("ideas", ["- [ ] Open", "- [x] Done", "  - [ ] Nested", "", "> 1. [X] Quoted"].join("\n"));
 
-    const html = (await getNote(collection, "ideas"))?.html ?? "";
+    const html = (await getNote(owner, "ideas"))?.html ?? "";
 
     expect(html.match(/<input[^>]*>/g)).toEqual([
       '<input type="checkbox" data-offset="3">',
@@ -272,18 +278,18 @@ describe("getNote", () => {
   });
 
   it("gives the SHA-256 hash of the file content as the version, and the length of the content", async () => {
-    await addFile("ideas.md", "# Ideas\n\nCafé\n");
+    await addNote("ideas", "# Ideas\n\nCafé\n");
 
-    expect(await getNote(collection, "ideas")).toMatchObject({
+    expect(await getNote(owner, "ideas")).toMatchObject({
       version: createHash("sha256").update("# Ideas\n\nCafé\n").digest("hex"),
       length: 14,
     });
   });
 
   it("gives each top-level element as a block, with its character range, Markdown and HTML", async () => {
-    await addFile("ideas.md", ["---", "tags: x", "---", "# Ideas", "", "Some *text*.", "", "```", "code", "```"].join("\n"));
+    await addNote("ideas", ["---", "tags: x", "---", "# Ideas", "", "Some *text*.", "", "```", "code", "```"].join("\n"));
 
-    expect((await getNote(collection, "ideas"))?.blocks).toEqual([
+    expect((await getNote(owner, "ideas"))?.blocks).toEqual([
       { start: 16, end: 23, markdown: "# Ideas", html: '<h1 id="user-content-ideas">Ideas</h1>' },
       { start: 25, end: 37, markdown: "Some *text*.", html: "<p>Some <em>text</em>.</p>" },
       { start: 39, end: 51, markdown: "```\ncode\n```", html: "<pre><code>code\n</code></pre>" },
@@ -291,9 +297,9 @@ describe("getNote", () => {
   });
 
   it("gives each top-level list item as a block with its nested items, and keeps the list number", async () => {
-    await addFile("ideas.md", ["- [ ] One", "  - Nested", "- Two", "", "3. Three", "4. Four"].join("\n"));
+    await addNote("ideas", ["- [ ] One", "  - Nested", "- Two", "", "3. Three", "4. Four"].join("\n"));
 
-    const blocks = (await getNote(collection, "ideas"))?.blocks ?? [];
+    const blocks = (await getNote(owner, "ideas"))?.blocks ?? [];
 
     expect(blocks.map(({ markdown }) => markdown)).toEqual(["- [ ] One\n  - Nested", "- Two", "3. Three", "4. Four"]);
     expect(blocks[0].html).toMatch(/^<ul class="contains-task-list">\n<li class="task-list-item">[\s\S]*Nested/);
@@ -303,88 +309,82 @@ describe("getNote", () => {
   });
 
   it("gives an empty HTML for a block that renders nothing, such as a link definition", async () => {
-    await addFile("ideas.md", ["See [docs][d].", "", "[d]: https://example.com"].join("\n"));
+    await addNote("ideas", ["See [docs][d].", "", "[d]: https://example.com"].join("\n"));
 
-    expect((await getNote(collection, "ideas"))?.blocks).toEqual([
+    expect((await getNote(owner, "ideas"))?.blocks).toEqual([
       { start: 0, end: 14, markdown: "See [docs][d].", html: '<p>See <a href="https://example.com">docs</a>.</p>' },
       { start: 16, end: 40, markdown: "[d]: https://example.com", html: "" },
     ]);
   });
 
   it("does not show YAML or TOML frontmatter", async () => {
-    await addFile("yaml.md", ["---", "title: Hidden", "---", "Body"].join("\n"));
-    await addFile("toml.md", ["+++", "title = 'Hidden'", "+++", "Body"].join("\n"));
+    await addNote("yaml", ["---", "title: Hidden", "---", "Body"].join("\n"));
+    await addNote("toml", ["+++", "title = 'Hidden'", "+++", "Body"].join("\n"));
 
-    expect((await getNote(collection, "yaml"))?.html).toBe("<p>Body</p>");
-    expect((await getNote(collection, "toml"))?.html).toBe("<p>Body</p>");
+    expect((await getNote(owner, "yaml"))?.html).toBe("<p>Body</p>");
+    expect((await getNote(owner, "toml"))?.html).toBe("<p>Body</p>");
   });
 
   it("gives the Todo counts, and no Note date for an Undated Note", async () => {
-    await addFile("ideas.md", ["- [ ] Open", "- [x] Done"].join("\n"));
+    await addNote("ideas", ["- [ ] Open", "- [x] Done"].join("\n"));
 
-    expect(await getNote(collection, "ideas")).toMatchObject({ date: null, openTodoCount: 1, todoCount: 2 });
+    expect(await getNote(owner, "ideas")).toMatchObject({ date: null, openTodoCount: 1, todoCount: 2 });
   });
 
   it("shows a change to a Note at the next call", async () => {
-    await addFile("ideas.md", "Before");
-    await getNote(collection, "ideas");
+    await addNote("ideas", "Before");
+    const { version, blocks } = (await getNote(owner, "ideas"))!;
 
-    await addFile("ideas.md", "After");
+    await updateNote(owner, { path: "ideas", version, range: blocks[0], markdown: "After" });
 
-    expect((await getNote(collection, "ideas"))?.html).toBe("<p>After</p>");
+    expect((await getNote(owner, "ideas"))?.html).toBe("<p>After</p>");
   });
 
   it.each([
     ["a missing Note", "work/2026-09-30-missing"],
     ["a folder", "work"],
     ["a folder with a .md name", "archive"],
-    ["a file that is not .md", "work/diagram.png"],
+    ["an Asset", "work/diagram.png"],
     ["the .md extension", "work/2026-09-29-standup.md"],
     ["an empty path", ""],
     ["a trailing slash", "work/2026-09-29-standup/"],
-    ["a Note in a dot-folder", ".obsidian/2026-09-29-workspace"],
-    ["a dot-file Note", "work/.2026-09-29-hidden"],
-    ["a parent segment that leaves the Collection", "../outside"],
-    ["a parent segment inside the path", "work/../../outside"],
-    ["a parent segment that stays inside", "work/../work/2026-09-29-standup"],
+    ["a parent segment", "work/../work/2026-09-29-standup"],
     ["a current-folder segment", "./work/2026-09-29-standup"],
-    ["an absolute path", "/etc/hosts"],
+    ["an absolute path", "/work/2026-09-29-standup"],
+    ["a case that differs", "Work/2026-09-29-standup"],
     ["a backslash", "work\\2026-09-29-standup"],
     ["a null byte", "work/2026-09-29-standup\0"],
   ])("gives not found for %s", async (_, notePath) => {
-    await addFile("notes/work/2026-09-29-standup.md", "# Standup");
-    await addFile("notes/work/diagram.png");
-    await addFile("notes/archive.md/2026-09-29-old.md");
-    await addFile("notes/.obsidian/2026-09-29-workspace.md");
-    await addFile("notes/work/.2026-09-29-hidden.md");
-    await addFile("outside.md", "# Outside");
+    await addNote("work/2026-09-29-standup", "# Standup");
+    await addAsset("work/diagram.png");
+    await addNote("archive.md/2026-09-29-old");
 
-    expect(await getNote(join(collection, "notes"), notePath)).toBeNull();
+    expect(await getNote(owner, notePath)).toBeNull();
   });
 
-  it("gives not found for a symbolic link that leaves the Collection", async () => {
-    const outside = await mkdtemp(join(tmpdir(), "planner-outside-"));
-    try {
-      await writeFile(join(outside, "secret.md"), "# Secret");
-      await symlink(join(outside, "secret.md"), join(collection, "secret.md"));
-      await symlink(outside, join(collection, "linked"));
+  it("gives not found for a Note of another Owner", async () => {
+    await addNote("work/2026-09-29-secret", "# Secret", otherOwner);
 
-      expect(await getNote(collection, "secret")).toBeNull();
-      expect(await getNote(collection, "linked/secret")).toBeNull();
-    } finally {
-      await rm(outside, { recursive: true, force: true });
-    }
+    expect(await getNote(owner, "work/2026-09-29-secret")).toBeNull();
+  });
+
+  it("gives the Note of the Owner when another Owner has a Note with the same Note path", async () => {
+    await addNote("ideas", "# Mine");
+    await addNote("ideas", "# Theirs", otherOwner);
+
+    expect(await getNote(owner, "ideas")).toMatchObject({ title: "Mine" });
+    expect(await getNote(otherOwner, "ideas")).toMatchObject({ title: "Theirs" });
   });
 });
 
 describe("links and images in a Note", () => {
   async function html(notePath: string) {
-    return (await getNote(collection, notePath))?.html ?? "";
+    return (await getNote(owner, notePath))?.html ?? "";
   }
 
   it("rewrites a relative link to a Note to its Note view URL, from the folder of the Note", async () => {
-    await addFile(
-      "work/2026-09-29-standup.md",
+    await addNote(
+      "work/2026-09-29-standup",
       ["[Retro](2026-09-26-retro.md)", "[Books](../reading/Books.md)", "[Plan](./deep/plan.md#next-week)"].join("\n\n"),
     );
 
@@ -398,8 +398,8 @@ describe("links and images in a Note", () => {
   });
 
   it("keeps external links and anchor links unchanged", async () => {
-    await addFile(
-      "ideas.md",
+    await addNote(
+      "ideas",
       [
         "[Docs](https://example.com/guide.md)",
         "[Protocol-relative](//example.com/a.md)",
@@ -421,8 +421,8 @@ describe("links and images in a Note", () => {
   });
 
   it("rewrites a relative image source to the asset URL, from the folder of the Note", async () => {
-    await addFile(
-      "work/2026-09-29-standup.md",
+    await addNote(
+      "work/2026-09-29-standup",
       ["![Diagram](../images/diagram.png)", "![Photo](<my photo.jpg>)", "![Chart](chart%20v2.svg)"].join("\n\n"),
     );
 
@@ -436,7 +436,7 @@ describe("links and images in a Note", () => {
   });
 
   it("decodes a percent-encoded link to a Note before it rewrites it", async () => {
-    await addFile("ideas.md", ["[One](my%20note.md)", "[Two](<my note.md>)"].join("\n\n"));
+    await addNote("ideas", ["[One](my%20note.md)", "[Two](<my note.md>)"].join("\n\n"));
 
     expect(await html("ideas")).toBe(
       ['<p><a href="/notes/my%20note">One</a></p>', '<p><a href="/notes/my%20note">Two</a></p>'].join("\n"),
@@ -444,7 +444,7 @@ describe("links and images in a Note", () => {
   });
 
   it("resolves a link that starts with / from the Collection root", async () => {
-    await addFile("work/2026-09-29-standup.md", ["[Books](/reading/Books.md)", "![Logo](/images/logo.png)"].join("\n\n"));
+    await addNote("work/2026-09-29-standup", ["[Books](/reading/Books.md)", "![Logo](/images/logo.png)"].join("\n\n"));
 
     expect(await html("work/2026-09-29-standup")).toBe(
       ['<p><a href="/notes/reading/Books">Books</a></p>', '<p><img src="/assets/images/logo.png" alt="Logo"></p>'].join(
@@ -454,8 +454,8 @@ describe("links and images in a Note", () => {
   });
 
   it("keeps only the text of a link or image that leaves the Collection, or that uses an unsafe scheme", async () => {
-    await addFile(
-      "work/2026-09-29-standup.md",
+    await addNote(
+      "work/2026-09-29-standup",
       [
         "[Outside](../../outside.md)",
         "![Secret](../../secret.png)",
@@ -474,7 +474,7 @@ describe("links and images in a Note", () => {
   });
 
   it("rewrites a reference-style link and image", async () => {
-    await addFile("work/2026-09-29-standup.md", ["[Retro][r] ![Chart][c]", "", "[r]: retro.md", "[c]: chart.png"].join("\n"));
+    await addNote("work/2026-09-29-standup", ["[Retro][r] ![Chart][c]", "", "[r]: retro.md", "[c]: chart.png"].join("\n"));
 
     expect(await html("work/2026-09-29-standup")).toBe(
       '<p><a href="/notes/work/retro">Retro</a> <img src="/assets/work/chart.png" alt="Chart"></p>',
@@ -482,7 +482,7 @@ describe("links and images in a Note", () => {
   });
 
   it("gives each heading a prefixed GitHub-style id, and points anchor links to it", async () => {
-    await addFile("ideas.md", ["## Open Todos", "", "## Open Todos", "", "[Jump](#open-todos-1)"].join("\n"));
+    await addNote("ideas", ["## Open Todos", "", "## Open Todos", "", "[Jump](#open-todos-1)"].join("\n"));
 
     expect(await html("ideas")).toBe(
       [
@@ -494,8 +494,8 @@ describe("links and images in a Note", () => {
   });
 
   it("keeps other external schemes, drops a query string and keeps an empty link", async () => {
-    await addFile(
-      "work/2026-09-29-standup.md",
+    await addNote(
+      "work/2026-09-29-standup",
       ["[Vault](obsidian://open?vault=x)", "[Retro](retro.md?v=2#top)", "[Empty]()", "[Query](?a=1)"].join("\n\n"),
     );
 
@@ -510,73 +510,87 @@ describe("links and images in a Note", () => {
   });
 
   it("keeps only the text of a link that leaves the Collection from the root or through an encoded ..", async () => {
-    await addFile("work/2026-09-29-standup.md", ["[Root](/../../x.md)", "[Encoded](%2E%2E/%2E%2E/x.md)"].join("\n\n"));
+    await addNote("work/2026-09-29-standup", ["[Root](/../../x.md)", "[Encoded](%2E%2E/%2E%2E/x.md)"].join("\n\n"));
 
     expect(await html("work/2026-09-29-standup")).toBe(["<p>Root</p>", "<p>Encoded</p>"].join("\n"));
   });
 });
 
 describe("getAsset", () => {
-  it("gives the content and the media type of an image in the Collection", async () => {
-    await addFile("work/images/diagram.png", "png bytes");
-    await addFile("photo.JPG", "jpg bytes");
-    await addFile("my chart.svg", "<svg/>");
+  it("gives the content and the media type of an Asset of the Owner", async () => {
+    await addAsset("work/images/diagram.png", "png bytes");
+    await addAsset("photo.JPG", "jpg bytes");
+    await addAsset("my chart.svg", "<svg/>");
 
-    expect(await getAsset(collection, "work/images/diagram.png")).toEqual({
+    expect(await getAsset(owner, "work/images/diagram.png")).toEqual({
       content: Buffer.from("png bytes"),
       mediaType: "image/png",
     });
-    expect(await getAsset(collection, "photo.JPG")).toMatchObject({ mediaType: "image/jpeg" });
-    expect(await getAsset(collection, "my chart.svg")).toMatchObject({ mediaType: "image/svg+xml" });
+    expect(await getAsset(owner, "photo.JPG")).toMatchObject({ mediaType: "image/jpeg" });
+    expect(await getAsset(owner, "my chart.svg")).toMatchObject({ mediaType: "image/svg+xml" });
   });
 
   it.each([
     ["a missing image", "work/missing.png"],
     ["a Note", "work/2026-09-29-standup.md"],
-    ["a file that is not an image", "work/report.pdf"],
     ["a folder with an image name", "work/folder.png"],
-    ["an image in a dot-folder", ".obsidian/icon.png"],
-    ["a parent segment that leaves the Collection", "../outside.png"],
-    ["a parent segment inside the path", "work/../../outside.png"],
+    ["a parent segment", "work/../work/diagram.png"],
     ["a current-folder segment", "./work/diagram.png"],
-    ["an absolute path", "/etc/diagram.png"],
+    ["an absolute path", "/work/diagram.png"],
+    ["a case that differs", "work/Diagram.png"],
     ["an empty path", ""],
     ["a null byte", "work/diagram.png\0.png"],
   ])("gives not found for %s", async (_, assetPath) => {
-    await addFile("notes/work/diagram.png", "png bytes");
-    await addFile("notes/work/2026-09-29-standup.md", "# Standup");
-    await addFile("notes/work/report.pdf");
-    await addFile("notes/work/folder.png/inside.png");
-    await addFile("notes/.obsidian/icon.png");
-    await addFile("outside.png", "secret");
+    await addAsset("work/diagram.png", "png bytes");
+    await addNote("work/2026-09-29-standup", "# Standup");
+    await addAsset("work/folder.png/inside.png");
 
-    expect(await getAsset(join(collection, "notes"), assetPath)).toBeNull();
+    expect(await getAsset(owner, assetPath)).toBeNull();
   });
 
-  it("gives not found for a symbolic link that leaves the Collection", async () => {
-    const outside = await mkdtemp(join(tmpdir(), "planner-outside-"));
-    try {
-      await writeFile(join(outside, "secret.png"), "secret");
-      await symlink(join(outside, "secret.png"), join(collection, "secret.png"));
-      await symlink(outside, join(collection, "linked"));
+  it("gives not found for an Asset of another Owner", async () => {
+    await addAsset("secret.png", "secret", otherOwner);
 
-      expect(await getAsset(collection, "secret.png")).toBeNull();
-      expect(await getAsset(collection, "linked/secret.png")).toBeNull();
-    } finally {
-      await rm(outside, { recursive: true, force: true });
-    }
+    expect(await getAsset(owner, "secret.png")).toBeNull();
   });
 });
 
+describe("importNote and importAsset", () => {
+  it("keep an existing Note or Asset unchanged and give exists", async () => {
+    await addNote("ideas", "Mine");
+    await addAsset("logo.png", "mine");
+
+    expect(await importNote(owner, "ideas", "New")).toBe("exists");
+    expect(await importAsset(owner, "logo.png", Buffer.from("new"))).toBe("exists");
+    expect(await content("ideas")).toBe("Mine");
+    expect((await getAsset(owner, "logo.png"))?.content).toEqual(Buffer.from("mine"));
+  });
+
+  it.each([
+    ["an empty path", ""],
+    ["an empty segment", "work//ideas"],
+    ["a dot-file", "work/.ideas"],
+    ["a dot-folder", ".obsidian/ideas"],
+    ["a parent segment", "work/../ideas"],
+    ["a null byte", "ideas\0"],
+  ])("reject %s", async (_, path) => {
+    await expect(importNote(owner, path, "Text")).rejects.toThrow();
+    await expect(importAsset(owner, `${path}.png`, Buffer.from("x"))).rejects.toThrow();
+  });
+
+  it("rejects an Asset that is not an image", async () => {
+    await expect(importAsset(owner, "report.pdf", Buffer.from("x"))).rejects.toThrow();
+  });
+});
 
 describe("createNote", () => {
   const date = "2026-09-29";
 
-  it("writes the Note to the Collection root and gives its Note path", async () => {
-    const result = await createNote(collection, { title: "Weekly review", body: "- [ ] Plan", date });
+  it("creates the Note in the Collection root and gives its Note path", async () => {
+    const result = await createNote(owner, { title: "Weekly review", body: "- [ ] Plan", date });
 
     expect(result).toEqual({ path: "2026-09-29-weekly-review" });
-    expect(await readFile(join(collection, "2026-09-29-weekly-review.md"), "utf8")).toBe(
+    expect(await content("2026-09-29-weekly-review")).toBe(
       "# Weekly review\n\n- [ ] Plan\n",
     );
   });
@@ -596,10 +610,10 @@ describe("createNote", () => {
     ["a cut of a word longer than 60 characters", "a".repeat(70), "a".repeat(60)],
     ["60 full characters when a - follows them", `${"a".repeat(60)} b`, "a".repeat(60)],
   ])("makes a slug with %s", async (_, title, expectedSlug) => {
-    const result = await createNote(collection, { title, body: "", date });
+    const result = await createNote(owner, { title, body: "", date });
 
     expect(result).toEqual({ path: `2026-09-29-${expectedSlug}` });
-    expect(await readdir(collection)).toEqual([`2026-09-29-${expectedSlug}.md`]);
+    expect(await paths()).toEqual([`2026-09-29-${expectedSlug}`]);
   });
 
   it.each([
@@ -610,57 +624,60 @@ describe("createNote", () => {
     ["an emoji title", "🎉"],
     ["a title with a newline", "Weekly\nreview"],
     ["a title with a carriage return", "Weekly\rreview"],
-  ])("gives invalid title for %s and writes no file", async (_, title) => {
-    expect(await createNote(collection, { title, body: "Body", date })).toEqual({ reason: "invalid title" });
-    expect(await readdir(collection)).toEqual([]);
+  ])("gives invalid title for %s and creates no Note", async (_, title) => {
+    expect(await createNote(owner, { title, body: "Body", date })).toEqual({ reason: "invalid title" });
+    expect(await paths()).toEqual([]);
   });
 
   it("trims the whitespace around the Note title", async () => {
-    await createNote(collection, { title: "  Weekly review \t", body: "", date });
+    await createNote(owner, { title: "  Weekly review \t", body: "", date });
 
-    expect(await readFile(join(collection, "2026-09-29-weekly-review.md"), "utf8")).toBe("# Weekly review\n");
+    expect(await content("2026-09-29-weekly-review")).toBe("# Weekly review\n");
   });
 
   it("writes only the heading and a newline for an empty body", async () => {
-    await createNote(collection, { title: "Weekly review", body: "", date });
+    await createNote(owner, { title: "Weekly review", body: "", date });
 
-    expect(await readFile(join(collection, "2026-09-29-weekly-review.md"), "utf8")).toBe("# Weekly review\n");
+    expect(await content("2026-09-29-weekly-review")).toBe("# Weekly review\n");
   });
 
   it("gives the body LF line endings and one final newline, without frontmatter", async () => {
-    await createNote(collection, { title: "Weekly review", body: "---\r\none\r\ntwo\rthree\n\n\n", date });
+    await createNote(owner, { title: "Weekly review", body: "---\r\none\r\ntwo\rthree\n\n\n", date });
 
-    expect(await readFile(join(collection, "2026-09-29-weekly-review.md"), "utf8")).toBe(
+    expect(await content("2026-09-29-weekly-review")).toBe(
       "# Weekly review\n\n---\none\ntwo\nthree\n",
     );
   });
 
-  it("gives exists and keeps the existing file unchanged", async () => {
-    await addFile("2026-09-29-weekly-review.md", "my own text");
+  it("gives exists and keeps the existing Note unchanged", async () => {
+    await addNote("2026-09-29-weekly-review", "my own text");
 
-    expect(await createNote(collection, { title: "Weekly review!", body: "New", date })).toEqual({ reason: "exists" });
-    expect(await readFile(join(collection, "2026-09-29-weekly-review.md"), "utf8")).toBe("my own text");
+    expect(await createNote(owner, { title: "Weekly review!", body: "New", date })).toEqual({ reason: "exists" });
+    expect(await content("2026-09-29-weekly-review")).toBe("my own text");
   });
 
-  it("gives exists for a folder with the same name", async () => {
-    await addFile("2026-09-29-weekly-review.md/inside.md");
+  it("creates the Note when another Owner has a Note with the same Note path", async () => {
+    await addNote("2026-09-29-weekly-review", "theirs", otherOwner);
 
-    expect(await createNote(collection, { title: "Weekly review", body: "", date })).toEqual({ reason: "exists" });
-  });
-
-  it("creates no folders, also when a Note with the same title is in a subfolder", async () => {
-    await addFile("work/2026-09-29-weekly-review.md", "work");
-
-    expect(await createNote(collection, { title: "Weekly review", body: "", date })).toEqual({
+    expect(await createNote(owner, { title: "Weekly review", body: "", date })).toEqual({
       path: "2026-09-29-weekly-review",
     });
-    expect((await readdir(collection)).sort()).toEqual(["2026-09-29-weekly-review.md", "work"]);
+    expect(await content("2026-09-29-weekly-review")).toBe("# Weekly review\n");
+  });
+
+  it("creates the Note in the root, also when a Note with the same title is in a subfolder", async () => {
+    await addNote("work/2026-09-29-weekly-review", "work");
+
+    expect(await createNote(owner, { title: "Weekly review", body: "", date })).toEqual({
+      path: "2026-09-29-weekly-review",
+    });
+    expect(await paths()).toEqual(["2026-09-29-weekly-review", "work/2026-09-29-weekly-review"]);
   });
 
   it("shows the new Note in the Overview and in Note by path", async () => {
-    await createNote(collection, { title: "Weekly review", body: "- [ ] Plan\n- [x] Look back", date });
+    await createNote(owner, { title: "Weekly review", body: "- [ ] Plan\n- [x] Look back", date });
 
-    expect(await getOverview(collection)).toEqual([
+    expect(await getOverview(owner)).toEqual([
       {
         date: "2026-09-29",
         notes: [
@@ -674,31 +691,25 @@ describe("createNote", () => {
         ],
       },
     ]);
-    expect(await getNote(collection, "2026-09-29-weekly-review")).toMatchObject({
+    expect(await getNote(owner, "2026-09-29-weekly-review")).toMatchObject({
       title: "Weekly review",
       date: "2026-09-29",
     });
-  });
-
-  it("throws a CollectionPathError for a missing Collection", async () => {
-    await expect(
-      createNote(join(collection, "missing"), { title: "Weekly review", body: "", date }),
-    ).rejects.toBeInstanceOf(CollectionPathError);
   });
 });
 
 describe("updateNote", () => {
   const path = "work/ideas";
-  const file = () => join(collection, "work/ideas.md");
+  const file = () => content(path);
 
   async function note() {
-    const loaded = await getNote(collection, path);
+    const loaded = await getNote(owner, path);
     if (!loaded) throw new Error("The fixture Note is missing");
     return loaded;
   }
 
   async function update(range: { start: number; end: number }, markdown: string, version?: string) {
-    return updateNote(collection, { path, version: version ?? (await note()).version, range, markdown });
+    return updateNote(owner, { path, version: version ?? (await note()).version, range, markdown });
   }
 
   async function updateBlock(index: number, markdown: string) {
@@ -708,99 +719,110 @@ describe("updateNote", () => {
 
   it("replaces only the characters of the block, and keeps the frontmatter and all other bytes", async () => {
     const before = ["---", "title: Keep  me", "---", "# Ideas", "", "Old  *text*", "", "* list   item", ""].join("\n");
-    await addFile("work/ideas.md", before);
+    await addNote("work/ideas", before);
 
     const result = await updateBlock(1, "New text");
 
-    const after = await readFile(file(), "utf8");
+    const after = await file();
     expect(after).toBe(before.replace("Old  *text*", "New text"));
     expect(result).toEqual({
-      version: createHash("sha256").update(after).digest("hex"),
+      version: createHash("sha256").update(after!).digest("hex"),
       range: { start: 33, end: 41 },
     });
-    expect((await note()).version).toBe(createHash("sha256").update(after).digest("hex"));
+    expect((await note()).version).toBe(createHash("sha256").update(after!).digest("hex"));
   });
 
-  it("writes through a temporary dot-file in the folder of the Note, and renames it over the Note", async () => {
-    await addFile("work/ideas.md", "Old");
-    const inodeBefore = (await stat(file())).ino;
+  it("gives the Overview the new Note title and Todo counts", async () => {
+    await addNote("work/2026-09-29-ideas", "# Old\n\n- [ ] One\n");
+    const { version, blocks } = (await getNote(owner, "work/2026-09-29-ideas"))!;
 
-    await updateBlock(0, "New");
+    await updateNote(owner, { path: "work/2026-09-29-ideas", version, range: blocks[0], markdown: "# New" });
+    const { blocks: newBlocks, version: newVersion } = (await getNote(owner, "work/2026-09-29-ideas"))!;
+    await updateNote(owner, {
+      path: "work/2026-09-29-ideas",
+      version: newVersion,
+      range: newBlocks[1],
+      markdown: "- [x] One\n- [ ] Two\n- [ ] Three",
+    });
 
-    expect((await stat(file())).ino).not.toBe(inodeBefore);
-    expect(await readdir(join(collection, "work"))).toEqual(["ideas.md"]);
+    expect(await onlyNote()).toMatchObject({ title: "New", openTodoCount: 2, todoCount: 3 });
   });
 
-  it("gives changed on disk for an old version, and keeps the file unchanged", async () => {
-    await addFile("work/ideas.md", "Old");
+  it("gives changed on disk for an old version, and keeps the Note unchanged", async () => {
+    await addNote("work/ideas", "Old");
     const { version, blocks } = await note();
-    await addFile("work/ideas.md", "Changed in my editor");
+    await update(blocks[0], "Changed in another tab");
 
     expect(await update(blocks[0], "New", version)).toEqual({ reason: "changed on disk" });
-    expect(await readFile(file(), "utf8")).toBe("Changed in my editor");
+    expect(await file()).toBe("Changed in another tab");
+  });
+
+  it("gives changed on disk for a write that lands between the version check and the save", async () => {
+    await addNote("work/ideas", "Old");
+    const { version, blocks } = await note();
+    const other = postgres(process.env.DATABASE_URL!, { max: 1 });
+    let save!: ReturnType<typeof update>;
+    try {
+      await other.begin(async (transaction) => {
+        await transaction`UPDATE notes SET markdown = 'Other', version = 'other' WHERE path = ${path}`;
+        save = update(blocks[0], "Mine", version);
+        // The save reads the old version, and its UPDATE then waits for the lock of this transaction.
+        while ((await transaction`SELECT 1 FROM pg_locks WHERE NOT granted`).length === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      });
+    } finally {
+      await other.end();
+    }
+
+    expect(await save).toEqual({ reason: "changed on disk" });
+    expect(await file()).toBe("Other");
   });
 
   it("gives not found for a Note that was deleted", async () => {
-    await addFile("work/ideas.md", "Old");
+    await addNote("work/ideas", "Old");
     const { version, blocks } = await note();
-    await unlink(file());
+    await db().delete(notes).where(eq(notes.path, path));
 
     expect(await update(blocks[0], "New", version)).toEqual({ reason: "not found" });
-    expect(await readdir(join(collection, "work"))).toEqual([]);
+    expect(await paths()).toEqual([]);
   });
 
   it.each([
-    ["a parent segment that leaves the Collection", "../outside"],
-    ["a parent segment inside the path", "work/../../outside"],
-    ["a dot-file Note", "work/.hidden"],
-    ["a Note in a dot-folder", ".obsidian/workspace"],
+    ["a missing Note", "work/missing"],
     ["the .md extension", "work/ideas.md"],
-    ["an absolute path", "/etc/hosts"],
+    ["a parent segment", "work/../work/ideas"],
+    ["an absolute path", "/work/ideas"],
   ])("gives not found for %s, and writes nothing", async (_, notePath) => {
-    await addFile("notes/work/ideas.md", "Inside");
-    await addFile("notes/work/.hidden.md", "Hidden");
-    await addFile("notes/.obsidian/workspace.md", "Tool data");
-    await addFile("outside.md", "Outside");
-    const version = createHash("sha256").update("Outside").digest("hex");
+    await addNote("work/ideas", "Inside");
+    const version = createHash("sha256").update("Inside").digest("hex");
 
-    expect(
-      await updateNote(join(collection, "notes"), { path: notePath, version, range: { start: 0, end: 6 }, markdown: "X" }),
-    ).toEqual({ reason: "not found" });
-    expect(await readFile(join(collection, "outside.md"), "utf8")).toBe("Outside");
-    expect(await readFile(join(collection, "notes/work/.hidden.md"), "utf8")).toBe("Hidden");
+    expect(await updateNote(owner, { path: notePath, version, range: { start: 0, end: 6 }, markdown: "X" })).toEqual({
+      reason: "not found",
+    });
+    expect(await file()).toBe("Inside");
   });
 
-  it("gives not found for a symbolic link that leaves the Collection, and writes nothing", async () => {
-    const outside = await mkdtemp(join(tmpdir(), "planner-outside-"));
-    try {
-      await writeFile(join(outside, "secret.md"), "Secret");
-      await symlink(join(outside, "secret.md"), join(collection, "secret.md"));
-      await symlink(outside, join(collection, "linked"));
-      const version = createHash("sha256").update("Secret").digest("hex");
+  it("gives not found for a Note of another Owner, and keeps it unchanged", async () => {
+    await addNote("work/ideas", "Theirs", otherOwner);
+    const version = createHash("sha256").update("Theirs").digest("hex");
 
-      for (const notePath of ["secret", "linked/secret"]) {
-        expect(
-          await updateNote(collection, { path: notePath, version, range: { start: 0, end: 6 }, markdown: "X" }),
-        ).toEqual({ reason: "not found" });
-      }
-      expect(await readFile(join(outside, "secret.md"), "utf8")).toBe("Secret");
-    } finally {
-      await rm(outside, { recursive: true, force: true });
-    }
+    expect(await update({ start: 0, end: 6 }, "Mine", version)).toEqual({ reason: "not found" });
+    expect((await exportNotes(otherOwner))[0].markdown).toBe("Theirs");
   });
 
   it("ticks and unticks a nested Todo in a list item block", async () => {
-    await addFile("work/ideas.md", ["- [ ] Plan", "  - [x] Book a room", "- [ ] Later", ""].join("\n"));
+    await addNote("work/ideas", ["- [ ] Plan", "  - [x] Book a room", "- [ ] Later", ""].join("\n"));
     const [block] = (await note()).blocks;
 
     await update(block, block.markdown.replace("[ ] Plan", "[x] Plan").replace("[x] Book", "[ ] Book"));
 
-    expect(await readFile(file(), "utf8")).toBe(["- [x] Plan", "  - [ ] Book a room", "- [ ] Later", ""].join("\n"));
+    expect(await file()).toBe(["- [x] Plan", "  - [ ] Book a room", "- [ ] Later", ""].join("\n"));
     expect(await note()).toMatchObject({ openTodoCount: 2, todoCount: 3 });
   });
 
   it("splits a block at an empty line, so the parts become separate blocks", async () => {
-    await addFile("work/ideas.md", "# Ideas\n\nOne\n");
+    await addNote("work/ideas", "# Ideas\n\nOne\n");
 
     const result = await updateBlock(1, "One\n\nTwo");
 
@@ -809,19 +831,19 @@ describe("updateNote", () => {
   });
 
   it("drops the blank lines and whitespace at the start and the end of the new Markdown", async () => {
-    await addFile("work/ideas.md", "One\n\nTwo\n");
+    await addNote("work/ideas", "One\n\nTwo\n");
 
     await updateBlock(0, "\n  \nNew  \n\n");
 
-    expect(await readFile(file(), "utf8")).toBe("New\n\nTwo\n");
+    expect(await file()).toBe("New\n\nTwo\n");
   });
 
   it("keeps the CRLF line endings of a file", async () => {
-    await addFile("work/ideas.md", "One\r\n\r\nTwo\r\n");
+    await addNote("work/ideas", "One\r\n\r\nTwo\r\n");
 
     await updateBlock(0, "New\nlines");
 
-    expect(await readFile(file(), "utf8")).toBe("New\r\nlines\r\n\r\nTwo\r\n");
+    expect(await file()).toBe("New\r\nlines\r\n\r\nTwo\r\n");
   });
 
   it.each([
@@ -831,11 +853,11 @@ describe("updateNote", () => {
     ["the only block after the frontmatter", "---\nx: 1\n---\n\nOne\n", 0, "---\nx: 1\n---\n"],
     ["the only block", "One\n", 0, ""],
   ])("removes %s with no text, and its blank lines", async (_, before, index, after) => {
-    await addFile("work/ideas.md", before);
+    await addNote("work/ideas", before);
 
     const result = await updateBlock(index, " \n ");
 
-    expect(await readFile(file(), "utf8")).toBe(after);
+    expect(await file()).toBe(after);
     expect(result).toMatchObject({ range: { start: expect.any(Number) } });
   });
 
@@ -847,12 +869,12 @@ describe("updateNote", () => {
     ["after the frontmatter", "---\nx: 1\n---\n", "One", "---\nx: 1\n---\n\nOne\n", 14],
     ["to an empty Note", "", "One", "One\n", 0],
   ])("adds a block at the end %s", async (_, before, markdown, after, start) => {
-    await addFile("work/ideas.md", before);
+    await addNote("work/ideas", before);
     const { length } = await note();
 
     const result = await update({ start: length, end: length }, markdown);
 
-    expect(await readFile(file(), "utf8")).toBe(after);
+    expect(await file()).toBe(after);
     expect(result).toMatchObject({ range: { start, end: start + markdown.length } });
   });
 
@@ -865,9 +887,9 @@ describe("updateNote", () => {
     ["that is empty before the end of the file", { start: 15, end: 15 }],
     ["with a fraction", { start: 15.5, end: 18 }],
   ])("throws for a range %s, and keeps the file unchanged", async (_, range) => {
-    await addFile("work/ideas.md", "---\nx: 1\n---\n\nOne\n");
+    await addNote("work/ideas", "---\nx: 1\n---\n\nOne\n");
 
     await expect(update(range, "New")).rejects.toThrow();
-    expect(await readFile(file(), "utf8")).toBe("---\nx: 1\n---\n\nOne\n");
+    expect(await file()).toBe("---\nx: 1\n---\n\nOne\n");
   });
 });

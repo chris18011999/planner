@@ -24,8 +24,8 @@ type OpenBlock = { target: Target; initial: string; saved: string };
 type Problem = "changed on disk" | "not found" | "save failed";
 
 const PROBLEM_MESSAGES: Record<Problem, string> = {
-  "changed on disk": "This Note changed on disk",
-  "not found": "This Note is no longer on disk",
+  "changed on disk": "This Note changed in another tab",
+  "not found": "This Note no longer exists",
   "save failed": "The app could not save this Note",
 };
 

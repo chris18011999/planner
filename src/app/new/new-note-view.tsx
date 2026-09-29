@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { useActionState } from "react";
-import { CollectionPathErrorPage } from "../collection-path-error";
 import { createNoteAction, type NewNoteFormState } from "./actions";
 
 const INITIAL_STATE: NewNoteFormState = { title: "", body: "" };
@@ -12,7 +11,6 @@ const FIELD_CLASSES =
 
 export function NewNoteView() {
   const [state, formAction, pending] = useActionState(createNoteAction, INITIAL_STATE);
-  if (state.collectionPathError) return <CollectionPathErrorPage message={state.collectionPathError} />;
 
   return (
     <div className="min-h-screen w-full bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">

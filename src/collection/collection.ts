@@ -1,7 +1,8 @@
-import { createHash, randomUUID } from "node:crypto";
-import { readdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { dirname, extname, isAbsolute, join } from "node:path";
+import { createHash } from "node:crypto";
+import { and, eq } from "drizzle-orm";
 import type { Root } from "mdast";
+import { db } from "../db/client";
+import { assets, notes } from "../db/schema";
 import {
   blockNodes,
   bodyStart,
@@ -69,24 +70,27 @@ export type NoteUpdate = {
 
 export type UpdateNoteResult = { version: string; range: BlockRange } | { reason: "not found" | "changed on disk" };
 
-type NoteLocation = {
-  folders: string[];
-  filename: string;
-};
+export type ImportResult = "created" | "exists";
 
-export class CollectionPathError extends Error {
-  name = "CollectionPathError";
-}
+export type NoteFile = { path: string; markdown: string };
 
-export async function getOverview(collectionPath: string | undefined): Promise<DayGroup[]> {
-  const checkedPath = await checkCollectionPath(collectionPath);
-  const locations = await listNoteLocations(checkedPath, []);
-  const readNotes = await Promise.all(locations.map((location) => readOverviewNote(checkedPath, location)));
-  const notes = readNotes.filter((note) => note !== null);
+export type AssetFile = { path: string; content: Buffer };
+
+export async function getOverview(ownerId: string): Promise<DayGroup[]> {
+  const rows = await db()
+    .select({
+      path: notes.path,
+      date: notes.date,
+      title: notes.title,
+      openTodoCount: notes.openTodoCount,
+      todoCount: notes.todoCount,
+    })
+    .from(notes)
+    .where(eq(notes.ownerId, ownerId));
   const dated = new Map<string, OverviewNote[]>();
   const undated: OverviewNote[] = [];
-  for (const note of notes) {
-    const date = noteDate(note.filename);
+  for (const { date, ...row } of rows) {
+    const note = { ...row, filename: filename(row.path) };
     if (date) dated.set(date, [...(dated.get(date) ?? []), note]);
     else undated.push(note);
   }
@@ -97,68 +101,138 @@ export async function getOverview(collectionPath: string | undefined): Promise<D
   return groups;
 }
 
-export async function getNote(collectionPath: string | undefined, notePath: string): Promise<Note | null> {
-  const checkedPath = await checkCollectionPath(collectionPath);
-  const location = await findNote(checkedPath, notePath);
-  if (!location) return null;
-  const source = await readNoteSource(checkedPath, location);
-  if (!source) return null;
-  const tree = parseNote(source.markdown);
+export async function getNote(ownerId: string, notePath: string): Promise<Note | null> {
+  const row = await findNote(ownerId, notePath);
+  if (!row) return null;
+  const tree = parseNote(row.markdown);
   return {
-    ...overviewNote(location, tree),
-    date: noteDate(location.filename),
-    version: source.version,
-    length: source.markdown.length,
-    ...renderNote(tree, location.folders, source.markdown),
+    path: row.path,
+    filename: filename(row.path),
+    title: row.title,
+    openTodoCount: row.openTodoCount,
+    todoCount: row.todoCount,
+    date: row.date,
+    version: row.version,
+    length: row.markdown.length,
+    ...renderNote(tree, row.path.split("/").slice(0, -1), row.markdown),
   };
 }
 
-export async function getAsset(collectionPath: string | undefined, assetPath: string): Promise<Asset | null> {
-  const checkedPath = await checkCollectionPath(collectionPath);
-  const mediaType = IMAGE_MEDIA_TYPES[extname(assetPath).toLowerCase()];
-  if (!mediaType) return null;
-  const file = await findFile(checkedPath, assetPath.split("/"));
-  if (!file) return null;
-  // The Collection is read at runtime and is never part of the build output.
-  const content = await readFile(/*turbopackIgnore: true*/ file).catch(missingAsNull);
-  return content && { content, mediaType };
+export async function getAsset(ownerId: string, assetPath: string): Promise<Asset | null> {
+  if (assetPath.includes("\0")) return null;
+  const [row] = await db()
+    .select({ content: assets.content, mediaType: assets.mediaType })
+    .from(assets)
+    .where(and(eq(assets.ownerId, ownerId), eq(assets.path, assetPath)));
+  return row ?? null;
 }
 
-export async function createNote(
-  collectionPath: string | undefined,
-  { title, body, date }: NewNote,
-): Promise<CreateNoteResult> {
-  const checkedPath = await checkCollectionPath(collectionPath);
+export async function createNote(ownerId: string, { title, body, date }: NewNote): Promise<CreateNoteResult> {
   const trimmedTitle = title.trim();
   const titleSlug = slug(trimmedTitle);
   if (/[\r\n]/.test(trimmedTitle) || !titleSlug) return { reason: "invalid title" };
   const path = `${date}-${titleSlug}`;
   const normalizedBody = body.replace(/\r\n?/g, "\n").trimEnd();
   const content = normalizedBody ? `# ${trimmedTitle}\n\n${normalizedBody}\n` : `# ${trimmedTitle}\n`;
-  try {
-    await writeFile(join(checkedPath, `${path}.md`), content, { flag: "wx" });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return { reason: "exists" };
-    throw error;
-  }
-  return { path };
+  const result = await insertNote(ownerId, path, content);
+  return result === "exists" ? { reason: "exists" } : { path };
 }
 
 export async function updateNote(
-  collectionPath: string | undefined,
+  ownerId: string,
   { path, version, range, markdown }: NoteUpdate,
 ): Promise<UpdateNoteResult> {
-  const checkedPath = await checkCollectionPath(collectionPath);
-  const location = await findNote(checkedPath, path);
-  const source = location && (await readNoteSource(checkedPath, location));
-  if (!location || !source) return { reason: "not found" };
-  if (source.version !== version) return { reason: "changed on disk" };
-  const tree = parseNote(source.markdown);
-  checkRange(source.markdown, tree, range);
-  const { content, range: newRange } = replaceBlock(source.markdown, tree, range, markdown);
-  const file = join(checkedPath, ...location.folders, location.filename);
-  await replaceFile(file, content);
-  return { version: hash(Buffer.from(content)), range: newRange };
+  const row = await findNote(ownerId, path);
+  if (!row) return { reason: "not found" };
+  if (row.version !== version) return { reason: "changed on disk" };
+  const tree = parseNote(row.markdown);
+  checkRange(row.markdown, tree, range);
+  const { content, range: newRange } = replaceBlock(row.markdown, tree, range, markdown);
+  const fields = derivedFields(path, content);
+  // The version in the WHERE clause makes the check and the write one step. A save from another tab in between changes no row.
+  const updated = await db()
+    .update(notes)
+    .set({ markdown: content, ...fields })
+    .where(and(eq(notes.id, row.id), eq(notes.ownerId, ownerId), eq(notes.version, version)))
+    .returning({ id: notes.id });
+  if (updated.length === 0) return { reason: "changed on disk" };
+  return { version: fields.version, range: newRange };
+}
+
+// The import writes Notes with the paths from the folder.
+export async function importNote(ownerId: string, path: string, markdown: string): Promise<ImportResult> {
+  checkPath(path);
+  return insertNote(ownerId, path, markdown);
+}
+
+export async function importAsset(ownerId: string, path: string, content: Buffer): Promise<ImportResult> {
+  checkPath(path);
+  const mediaType = assetMediaType(path);
+  if (!mediaType) throw new Error(`The Asset path "${path}" does not end in an image extension.`);
+  const inserted = await db()
+    .insert(assets)
+    .values({ ownerId, path, mediaType, content })
+    .onConflictDoNothing({ target: [assets.ownerId, assets.path] })
+    .returning({ id: assets.id });
+  return inserted.length > 0 ? "created" : "exists";
+}
+
+export async function exportNotes(ownerId: string): Promise<NoteFile[]> {
+  return db().select({ path: notes.path, markdown: notes.markdown }).from(notes).where(eq(notes.ownerId, ownerId));
+}
+
+export async function exportAssets(ownerId: string): Promise<AssetFile[]> {
+  return db().select({ path: assets.path, content: assets.content }).from(assets).where(eq(assets.ownerId, ownerId));
+}
+
+export async function existingPaths(ownerId: string): Promise<{ notes: Set<string>; assets: Set<string> }> {
+  const [noteRows, assetRows] = await Promise.all([
+    db().select({ path: notes.path }).from(notes).where(eq(notes.ownerId, ownerId)),
+    db().select({ path: assets.path }).from(assets).where(eq(assets.ownerId, ownerId)),
+  ]);
+  return { notes: new Set(noteRows.map((row) => row.path)), assets: new Set(assetRows.map((row) => row.path)) };
+}
+
+export function assetMediaType(path: string): string | undefined {
+  const extension = /\.[^./]*$/.exec(path)?.[0].toLowerCase();
+  return extension ? IMAGE_MEDIA_TYPES[extension] : undefined;
+}
+
+// Postgres rejects a null byte in a text parameter. No stored path has one, so such a path is not found.
+async function findNote(ownerId: string, notePath: string) {
+  if (notePath.includes("\0")) return null;
+  const [row] = await db()
+    .select()
+    .from(notes)
+    .where(and(eq(notes.ownerId, ownerId), eq(notes.path, notePath)));
+  return row ?? null;
+}
+
+async function insertNote(ownerId: string, path: string, markdown: string): Promise<ImportResult> {
+  const inserted = await db()
+    .insert(notes)
+    .values({ ownerId, path, markdown, ...derivedFields(path, markdown) })
+    .onConflictDoNothing({ target: [notes.ownerId, notes.path] })
+    .returning({ id: notes.id });
+  return inserted.length > 0 ? "created" : "exists";
+}
+
+// The Overview reads these columns, so it does not parse each Note.
+function derivedFields(path: string, markdown: string) {
+  const tree = parseNote(markdown);
+  const name = path.split("/").at(-1)!;
+  return {
+    version: hash(markdown),
+    date: noteDate(name),
+    title: headingTitle(tree) ?? name,
+    ...countTodos(tree),
+  };
+}
+
+// The Collection holds only paths that the folder import accepts. So the export can write each path back as a file.
+function checkPath(path: string) {
+  const valid = path.split("/").every((segment) => segment && !segment.startsWith(".") && !segment.includes("\0"));
+  if (!valid) throw new Error(`The path "${path}" has an empty segment, a segment that starts with "." or a null byte.`);
 }
 
 function checkRange(markdown: string, tree: Root, { start, end }: BlockRange) {
@@ -211,19 +285,6 @@ function replaceBlock(markdown: string, tree: Root, { start, end }: BlockRange, 
   };
 }
 
-// The temporary file starts with a ".", so the Overview skips it. The rename replaces the Note in one step.
-async function replaceFile(file: string, content: string) {
-  const { mode } = await stat(file);
-  const temporary = join(dirname(file), `.${randomUUID()}.tmp`);
-  await writeFile(temporary, content, { flag: "wx", mode });
-  try {
-    await rename(temporary, file);
-  } catch (error) {
-    await unlink(temporary).catch(() => {});
-    throw error;
-  }
-}
-
 // NFKD splits "é" into "e" and a combining mark, but it keeps these letters whole.
 const PLAIN_LETTERS: Record<string, string> = { ß: "ss", æ: "ae", ø: "o", œ: "oe", ł: "l" };
 
@@ -240,71 +301,6 @@ function slug(title: string) {
   return full.slice(0, cut > 0 ? cut : SLUG_LIMIT);
 }
 
-async function findNote(collectionPath: string, notePath: string): Promise<NoteLocation | null> {
-  const segments = notePath.split("/");
-  const location = { folders: segments.slice(0, -1), filename: `${segments.at(-1)}.md` };
-  const file = await findFile(collectionPath, [...location.folders, location.filename]);
-  return file ? location : null;
-}
-
-// The Overview lists no dot-files and no symbolic links. findFile rejects them too, for Notes and for Assets.
-// The real path must equal the plain join. This check rejects "..", symbolic links and a case that differs from the disk.
-async function findFile(collectionPath: string, segments: string[]): Promise<string | null> {
-  if (segments.some((segment) => !segment || segment.startsWith("."))) return null;
-  const [realCollection, realFile] = await Promise.all([
-    realpath(collectionPath),
-    realpath(join(collectionPath, ...segments)).catch(() => null),
-  ]);
-  if (realFile !== join(realCollection, ...segments)) return null;
-  const file = await stat(realFile).catch(() => null);
-  return file?.isFile() ? realFile : null;
-}
-
-async function readOverviewNote(collectionPath: string, location: NoteLocation): Promise<OverviewNote | null> {
-  const source = await readNoteSource(collectionPath, location);
-  return source && overviewNote(location, parseNote(source.markdown));
-}
-
-async function readNoteSource(
-  collectionPath: string,
-  { folders, filename }: NoteLocation,
-): Promise<{ markdown: string; version: string } | null> {
-  const content = await readFile(join(collectionPath, ...folders, filename)).catch(missingAsNull);
-  return content && { markdown: content.toString("utf8"), version: hash(content) };
-}
-
-function hash(content: Buffer) {
-  return createHash("sha256").update(content).digest("hex");
-}
-
-// Editors that save through a temporary file and a rename can remove a Note between the lookup and readFile.
-function missingAsNull(error: NodeJS.ErrnoException): null {
-  if (error?.code === "ENOENT") return null;
-  throw error;
-}
-
-function overviewNote({ folders, filename }: NoteLocation, tree: Root): OverviewNote {
-  const name = filename.replace(/\.md$/, "");
-  return {
-    path: [...folders, name].join("/"),
-    filename,
-    title: headingTitle(tree) ?? name,
-    ...countTodos(tree),
-  };
-}
-
-async function checkCollectionPath(collectionPath: string | undefined): Promise<string> {
-  if (!collectionPath) throw new CollectionPathError("The Collection path is not set.");
-  if (!isAbsolute(collectionPath)) {
-    throw new CollectionPathError(`The Collection path "${collectionPath}" is not an absolute path.`);
-  }
-  const folder = await stat(collectionPath).catch(() => null);
-  if (!folder?.isDirectory()) {
-    throw new CollectionPathError(`The Collection path "${collectionPath}" is not a folder.`);
-  }
-  return collectionPath;
-}
-
 function noteDate(filename: string): string | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})(?!\d)/.exec(filename);
   if (!match) return null;
@@ -313,20 +309,14 @@ function noteDate(filename: string): string | null {
   return parsed.toISOString().startsWith(date) ? date : null;
 }
 
-function byFilename(a: OverviewNote, b: OverviewNote) {
-  return a.filename.localeCompare(b.filename, "en") || a.path.localeCompare(b.path, "en");
+function filename(path: string) {
+  return `${path.split("/").at(-1)}.md`;
 }
 
-async function listNoteLocations(collectionPath: string, folders: string[]): Promise<NoteLocation[]> {
-  const entries = await readdir(join(collectionPath, ...folders), { withFileTypes: true });
-  const locations: NoteLocation[] = [];
-  for (const entry of entries) {
-    if (entry.name.startsWith(".")) continue;
-    if (entry.isDirectory()) {
-      locations.push(...(await listNoteLocations(collectionPath, [...folders, entry.name])));
-    } else if (entry.isFile() && entry.name.endsWith(".md")) {
-      locations.push({ folders, filename: entry.name });
-    }
-  }
-  return locations;
+function hash(markdown: string) {
+  return createHash("sha256").update(markdown).digest("hex");
+}
+
+function byFilename(a: OverviewNote, b: OverviewNote) {
+  return a.filename.localeCompare(b.filename, "en") || a.path.localeCompare(b.path, "en");
 }

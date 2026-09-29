@@ -1,6 +1,6 @@
 # 1. The app creates Notes
 
-Status: accepted, 2026-09-29. ADR 0002 supersedes the network part.
+Status: accepted, 2026-09-29. ADR 0002 supersedes the network part. ADR 0004 supersedes the file-based parts.
 
 ## Context
 

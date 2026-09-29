@@ -30,7 +30,7 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# the local Collection of Notes
+# a local folder of Notes for npm run import
 /collection/
 
 # env files (can opt-in for committing if needed)
