@@ -6,7 +6,7 @@ import { db } from "../db/client";
 import { notes } from "../db/schema";
 import { setupTestDatabase } from "../db/test-database";
 import { ensureUser } from "../db/users";
-import { createNote, exportNotes, getAsset, getNote, getOverview, importAsset, importNote, updateNote } from "./collection";
+import { createNote, exportNotes, getNote, getOverview, importNote, updateNote } from "./collection";
 
 setupTestDatabase();
 
@@ -20,10 +20,6 @@ beforeEach(async () => {
 
 async function addNote(path: string, markdown = "", ownerId = owner) {
   expect(await importNote(ownerId, path, markdown)).toBe("created");
-}
-
-async function addAsset(path: string, content = "", ownerId = owner) {
-  expect(await importAsset(ownerId, path, Buffer.from(content))).toBe("created");
 }
 
 async function locations() {
@@ -344,7 +340,6 @@ describe("getNote", () => {
     ["a missing Note", "work/2026-09-30-missing"],
     ["a folder", "work"],
     ["a folder with a .md name", "archive"],
-    ["an Asset", "work/diagram.png"],
     ["the .md extension", "work/2026-09-29-standup.md"],
     ["an empty path", ""],
     ["a trailing slash", "work/2026-09-29-standup/"],
@@ -356,7 +351,6 @@ describe("getNote", () => {
     ["a null byte", "work/2026-09-29-standup\0"],
   ])("gives not found for %s", async (_, notePath) => {
     await addNote("work/2026-09-29-standup", "# Standup");
-    await addAsset("work/diagram.png");
     await addNote("archive.md/2026-09-29-old");
 
     expect(await getNote(owner, notePath)).toBeNull();
@@ -516,54 +510,12 @@ describe("links and images in a Note", () => {
   });
 });
 
-describe("getAsset", () => {
-  it("gives the content and the media type of an Asset of the Owner", async () => {
-    await addAsset("work/images/diagram.png", "png bytes");
-    await addAsset("photo.JPG", "jpg bytes");
-    await addAsset("my chart.svg", "<svg/>");
-
-    expect(await getAsset(owner, "work/images/diagram.png")).toEqual({
-      content: Buffer.from("png bytes"),
-      mediaType: "image/png",
-    });
-    expect(await getAsset(owner, "photo.JPG")).toMatchObject({ mediaType: "image/jpeg" });
-    expect(await getAsset(owner, "my chart.svg")).toMatchObject({ mediaType: "image/svg+xml" });
-  });
-
-  it.each([
-    ["a missing image", "work/missing.png"],
-    ["a Note", "work/2026-09-29-standup.md"],
-    ["a folder with an image name", "work/folder.png"],
-    ["a parent segment", "work/../work/diagram.png"],
-    ["a current-folder segment", "./work/diagram.png"],
-    ["an absolute path", "/work/diagram.png"],
-    ["a case that differs", "work/Diagram.png"],
-    ["an empty path", ""],
-    ["a null byte", "work/diagram.png\0.png"],
-  ])("gives not found for %s", async (_, assetPath) => {
-    await addAsset("work/diagram.png", "png bytes");
-    await addNote("work/2026-09-29-standup", "# Standup");
-    await addAsset("work/folder.png/inside.png");
-
-    expect(await getAsset(owner, assetPath)).toBeNull();
-  });
-
-  it("gives not found for an Asset of another Owner", async () => {
-    await addAsset("secret.png", "secret", otherOwner);
-
-    expect(await getAsset(owner, "secret.png")).toBeNull();
-  });
-});
-
-describe("importNote and importAsset", () => {
-  it("keep an existing Note or Asset unchanged and give exists", async () => {
+describe("importNote", () => {
+  it("keeps an existing Note unchanged and gives exists", async () => {
     await addNote("ideas", "Mine");
-    await addAsset("logo.png", "mine");
 
     expect(await importNote(owner, "ideas", "New")).toBe("exists");
-    expect(await importAsset(owner, "logo.png", Buffer.from("new"))).toBe("exists");
     expect(await content("ideas")).toBe("Mine");
-    expect((await getAsset(owner, "logo.png"))?.content).toEqual(Buffer.from("mine"));
   });
 
   it.each([
@@ -573,13 +525,8 @@ describe("importNote and importAsset", () => {
     ["a dot-folder", ".obsidian/ideas"],
     ["a parent segment", "work/../ideas"],
     ["a null byte", "ideas\0"],
-  ])("reject %s", async (_, path) => {
+  ])("rejects %s", async (_, path) => {
     await expect(importNote(owner, path, "Text")).rejects.toThrow();
-    await expect(importAsset(owner, `${path}.png`, Buffer.from("x"))).rejects.toThrow();
-  });
-
-  it("rejects an Asset that is not an image", async () => {
-    await expect(importAsset(owner, "report.pdf", Buffer.from("x"))).rejects.toThrow();
   });
 });
 

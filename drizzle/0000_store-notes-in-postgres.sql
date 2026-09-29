@@ -1,13 +1,3 @@
-CREATE TABLE "assets" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"owner_id" text NOT NULL,
-	"path" text NOT NULL,
-	"media_type" text NOT NULL,
-	"content" "bytea" NOT NULL,
-	"created_at" timestamp DEFAULT now() NOT NULL,
-	CONSTRAINT "assets_owner_id_path_unique" UNIQUE("owner_id","path")
-);
---> statement-breakpoint
 CREATE TABLE "notes" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"owner_id" text NOT NULL,
@@ -34,5 +24,4 @@ CREATE TABLE "user" (
 	CONSTRAINT "user_email_unique" UNIQUE("email")
 );
 --> statement-breakpoint
-ALTER TABLE "assets" ADD CONSTRAINT "assets_owner_id_user_id_fk" FOREIGN KEY ("owner_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "notes" ADD CONSTRAINT "notes_owner_id_user_id_fk" FOREIGN KEY ("owner_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;

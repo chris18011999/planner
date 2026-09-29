@@ -52,12 +52,11 @@ Ticket 11 retires stories 1 to 5, 8, 29 and 31. They describe the folder on disk
 
 - **Stack**: Next.js with the App Router and TypeScript. Server components read the Collection from Postgres at each request, through Drizzle ORM and the `postgres` driver. The app has no API layer.
 - **Configuration**: `DATABASE_URL` in `.env.local` gives the connection. `OWNER_EMAIL` gives the one User until ticket 09 ships. `compose.yaml` starts a local Postgres, with `POSTGRES_PASSWORD` from `.env.local`.
-- **Database**: The tables are `user`, in the Better Auth shape, `notes` and `assets`. Each Note and each Asset has an owner id. The owner id and the path together are unique. Drizzle Kit owns the migrations in `drizzle/`. `npm run db:migrate` runs them and creates the User of `OWNER_EMAIL`.
-- **Import and export**: `npm run import -- <folder> --owner <email>` copies the `.md` files and images of a folder into the Collection. It skips dot-files, dot-folders and symbolic links. It creates only, and it lists each path that exists. `--dry-run` lists what it would create. `npm run export -- <folder> --owner <email>` writes the Collection back to an empty folder.
-- **Collection module**: One deep module owns all knowledge of the Collection. The Next.js pages only call it and render its result. Each operation takes the owner id, and every query filters on it. Its interface has five operations:
+- **Database**: The tables are `user`, in the Better Auth shape, and `notes`. Each Note has an owner id. The owner id and the Note path together are unique. Drizzle Kit owns the migrations in `drizzle/`. `npm run db:migrate` runs them and creates the User of `OWNER_EMAIL`.
+- **Import and export**: `npm run import -- <folder> --owner <email>` copies the `.md` files of a folder into the Collection. It skips images, because the app stores no Assets for now. It skips dot-files, dot-folders and symbolic links. It creates only, and it lists each path that exists. `--dry-run` lists what it would create. `npm run export -- <folder> --owner <email>` writes the Collection back to an empty folder.
+- **Collection module**: One deep module owns all knowledge of the Collection. The Next.js pages only call it and render its result. Each operation takes the owner id, and every query filters on it. Its interface has four operations:
   - **Overview model**: It takes the owner id. It returns the day groups, newest Note date first, with the Undated Notes as the last group. Each group holds its Notes in filename order. Each Note has its Note title, its Note path and its Open Todo count. The Overview reads these values from columns that each write computes.
   - **Note by path**: It takes a Note path. It returns the Note title, the Note content rendered to HTML, the version of the Note and its blocks. Each block has its character range, its Markdown and its HTML. For a path that is not a Note of the Owner, it returns "not found".
-  - **Asset by path**: It takes a path. It returns the content and the media type of an Asset of the Owner. For any other path, it returns "not found".
   - **Create Note**: It takes the Note title, the body and the Note date. It creates a new Note in the Collection root and returns its Note path. It returns "exists" or "invalid title" on failure. The unique index stops an overwrite. Ticket 06 gives the rules.
   - **Update Note**: It takes the Note path, the version that the page loaded, the character range of a block and the new Markdown of that block. It replaces only that range and returns the new version. The `UPDATE` checks the version itself, so the check and the write are one step. It returns "not found" or "changed on disk" on failure. Ticket 07 gives the rules.
 - **Note path**: The path of a Note in the Collection, without the `.md` extension, for example `work/2026-09-29-standup`. The Note view URL is `/notes/` followed by the Note path.
@@ -67,9 +66,9 @@ Ticket 11 retires stories 1 to 5, 8, 29 and 31. They describe the folder on disk
 - **Markdown rendering**: GitHub-flavoured Markdown. The renderer strips the frontmatter. Each task-list checkbox gives the offset of its mark in the file, so a click can tick it.
 - **Block editing**: A block is one top-level element, or one top-level list item. A click opens it as a text field with its Markdown source. It saves on blur and after 2 seconds without typing. The version check refuses a save after a change in another tab.
 - **Network**: The app binds to `127.0.0.1` in `dev` and in `start`.
-- **Link rewriting**: The renderer resolves a relative link to a `.md` file against the folder of the current Note, and rewrites it to that Note's Note view URL. It rewrites a relative image source to the asset URL. It does not change external links. It prefixes anchor links and heading ids with `user-content-`, as GitHub does.
-- **Owner isolation**: No operation can read or change a Note or an Asset of another User.
-- **Skipped files**: The import skips dot-files and dot-folders at every level. It treats only `.md` files as Notes, and only image files as Assets.
+- **Link rewriting**: The renderer resolves a relative link to a `.md` file against the folder of the current Note, and rewrites it to that Note's Note view URL. It rewrites a relative image source to the asset URL. Since ticket 11, no route serves that URL, so the image does not load. It does not change external links. It prefixes anchor links and heading ids with `user-content-`, as GitHub does.
+- **Owner isolation**: No operation can read or change a Note of another User.
+- **Skipped files**: The import skips dot-files and dot-folders at every level. It treats only `.md` files as Notes.
 
 ## Testing Decisions
 

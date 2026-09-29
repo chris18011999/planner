@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { Root } from "mdast";
 import { db } from "../db/client";
-import { assets, notes } from "../db/schema";
+import { notes } from "../db/schema";
 import {
   blockNodes,
   bodyStart,
@@ -36,22 +36,7 @@ export type Note = OverviewNote & {
   blocks: NoteBlock[];
 };
 
-export type Asset = {
-  content: Buffer;
-  mediaType: string;
-};
-
 const SLUG_LIMIT = 60;
-
-const IMAGE_MEDIA_TYPES: Record<string, string> = {
-  ".avif": "image/avif",
-  ".gif": "image/gif",
-  ".jpeg": "image/jpeg",
-  ".jpg": "image/jpeg",
-  ".png": "image/png",
-  ".svg": "image/svg+xml",
-  ".webp": "image/webp",
-};
 
 export type NewNote = {
   title: string;
@@ -73,8 +58,6 @@ export type UpdateNoteResult = { version: string; range: BlockRange } | { reason
 export type ImportResult = "created" | "exists";
 
 export type NoteFile = { path: string; markdown: string };
-
-export type AssetFile = { path: string; content: Buffer };
 
 export async function getOverview(ownerId: string): Promise<DayGroup[]> {
   const rows = await db()
@@ -118,15 +101,6 @@ export async function getNote(ownerId: string, notePath: string): Promise<Note |
   };
 }
 
-export async function getAsset(ownerId: string, assetPath: string): Promise<Asset | null> {
-  if (assetPath.includes("\0")) return null;
-  const [row] = await db()
-    .select({ content: assets.content, mediaType: assets.mediaType })
-    .from(assets)
-    .where(and(eq(assets.ownerId, ownerId), eq(assets.path, assetPath)));
-  return row ?? null;
-}
-
 export async function createNote(ownerId: string, { title, body, date }: NewNote): Promise<CreateNoteResult> {
   const trimmedTitle = title.trim();
   const titleSlug = slug(trimmedTitle);
@@ -165,37 +139,8 @@ export async function importNote(ownerId: string, path: string, markdown: string
   return insertNote(ownerId, path, markdown);
 }
 
-export async function importAsset(ownerId: string, path: string, content: Buffer): Promise<ImportResult> {
-  checkPath(path);
-  const mediaType = assetMediaType(path);
-  if (!mediaType) throw new Error(`The Asset path "${path}" does not end in an image extension.`);
-  const inserted = await db()
-    .insert(assets)
-    .values({ ownerId, path, mediaType, content })
-    .onConflictDoNothing({ target: [assets.ownerId, assets.path] })
-    .returning({ id: assets.id });
-  return inserted.length > 0 ? "created" : "exists";
-}
-
 export async function exportNotes(ownerId: string): Promise<NoteFile[]> {
   return db().select({ path: notes.path, markdown: notes.markdown }).from(notes).where(eq(notes.ownerId, ownerId));
-}
-
-export async function exportAssets(ownerId: string): Promise<AssetFile[]> {
-  return db().select({ path: assets.path, content: assets.content }).from(assets).where(eq(assets.ownerId, ownerId));
-}
-
-export async function existingPaths(ownerId: string): Promise<{ notes: Set<string>; assets: Set<string> }> {
-  const [noteRows, assetRows] = await Promise.all([
-    db().select({ path: notes.path }).from(notes).where(eq(notes.ownerId, ownerId)),
-    db().select({ path: assets.path }).from(assets).where(eq(assets.ownerId, ownerId)),
-  ]);
-  return { notes: new Set(noteRows.map((row) => row.path)), assets: new Set(assetRows.map((row) => row.path)) };
-}
-
-export function assetMediaType(path: string): string | undefined {
-  const extension = /\.[^./]*$/.exec(path)?.[0].toLowerCase();
-  return extension ? IMAGE_MEDIA_TYPES[extension] : undefined;
 }
 
 // Postgres rejects a null byte in a text parameter. No stored path has one, so such a path is not found.

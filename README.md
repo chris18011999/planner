@@ -14,5 +14,5 @@ A view of Markdown Notes and the Todos inside them. The Notes live in Postgres.
 ## Database
 
 - `npm run db:generate` makes a migration in `drizzle/` from `src/db/schema.ts`.
-- `npm run import -- <folder> --owner <email>` copies the `.md` files and images of a folder into the database. It creates only. `--dry-run` lists what it would create.
-- `npm run export -- <folder> --owner <email>` writes the Notes and Assets of a User to an empty folder.
+- `npm run import -- <folder> --owner <email>` copies the `.md` files of a folder into the database. It creates only. `--dry-run` lists what it would create.
+- `npm run export -- <folder> --owner <email>` writes the Notes of a User to an empty folder.

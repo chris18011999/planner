@@ -9,11 +9,11 @@ A person who signs in with a Google account. Each User has their own Collection.
 _Avoid_: Account, member, profile
 
 **Owner**:
-The User whose Collection holds a Note or an Asset.
+The User whose Collection holds a Note.
 _Avoid_: Author, creator
 
 **Collection**:
-All Notes and Assets of one User. The Notes keep a folder structure in their Note paths.
+All Notes of one User. The Notes keep a folder structure in their Note paths.
 _Avoid_: Vault, library, workspace, notes folder
 
 **Note**:
@@ -21,7 +21,7 @@ One Markdown document in the Collection, with its Note path. It is the only kind
 _Avoid_: Document, entry, page, file
 
 **Asset**:
-An image in the Collection that a Note shows. It has an Asset path, for example `work/images/diagram.png`. The app serves it at its asset URL.
+An image that a Note shows. It has an Asset path, for example `work/images/diagram.png`. The app stores no Assets for now. A later ticket decides where they live.
 _Avoid_: Attachment, media, upload
 
 **Note path**:
@@ -69,9 +69,9 @@ The SHA-256 hash of the Markdown of a Note, with its frontmatter. A save with an
 _Avoid_: Revision, timestamp, etag
 
 **Import**:
-The one-time copy of a folder of Markdown files and images into the Collection of a User. It creates only.
+The one-time copy of a folder of Markdown files into the Collection of a User. It creates only.
 _Avoid_: Sync, upload
 
 **Export**:
-The copy of the Collection of a User back to a folder of Markdown files and images.
+The copy of the Collection of a User back to a folder of Markdown files.
 _Avoid_: Backup, download

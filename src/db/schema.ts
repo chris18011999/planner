@@ -1,8 +1,4 @@
-import { boolean, customType, date, integer, pgTable, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
-
-const bytea = customType<{ data: Buffer }>({
-  dataType: () => "bytea",
-});
+import { boolean, date, integer, pgTable, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
 
 // Better Auth owns this table from ticket 09 on. The columns follow the shape that its Drizzle adapter expects.
 export const user = pgTable("user", {
@@ -37,21 +33,6 @@ export const notes = pgTable(
       .defaultNow()
       .$onUpdate(() => new Date())
       .notNull(),
-  },
-  (table) => [unique().on(table.ownerId, table.path)],
-);
-
-export const assets = pgTable(
-  "assets",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    ownerId: text("owner_id")
-      .notNull()
-      .references(() => user.id, { onDelete: "cascade" }),
-    path: text("path").notNull(),
-    mediaType: text("media_type").notNull(),
-    content: bytea("content").notNull(),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => [unique().on(table.ownerId, table.path)],
 );

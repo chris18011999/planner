@@ -22,7 +22,7 @@ export function setupTestDatabase() {
   });
 
   beforeEach(async () => {
-    await db().execute(sql`TRUNCATE "notes", "assets", "user" CASCADE`);
+    await db().execute(sql`TRUNCATE "notes", "user" CASCADE`);
   });
 
   afterAll(async () => {

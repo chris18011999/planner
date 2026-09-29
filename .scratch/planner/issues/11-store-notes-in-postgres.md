@@ -11,7 +11,7 @@
 - [x] A `compose.yaml` starts a local Postgres for development. Its password comes from `.env.local`, not from the file.
 - [x] The schema has a `user` table in the shape of Better Auth: id, name, email (unique), email verified, image, created at and updated at. Ticket 09 uses this table without a migration.
 - [x] The schema has a `notes` table: id, owner id (refers to `user.id`), Note path, Markdown, version, Note date, Note title, Open Todo count, created at and updated at. The owner id and the Note path together are unique.
-- [x] The schema has an `assets` table: id, owner id (refers to `user.id`), Asset path, media type, content and created at. The owner id and the Asset path together are unique.
+- [ ] ~~The schema has an `assets` table: id, owner id (refers to `user.id`), Asset path, media type, content and created at. The owner id and the Asset path together are unique.~~ Removed, see the comment "Assets removed".
 - [x] The Note path keeps its current form, for example `work/2026-09-29-standup`. Note view URLs and relative links in a Note work as before.
 - [x] The Markdown column holds the full file content, with the frontmatter. The version stays the SHA-256 hash of that content.
 - [x] Each write computes the Note date, Note title and Open Todo count from the Markdown, with the current parser. The Overview reads these columns and does not parse each Note.
@@ -53,12 +53,14 @@
 
 **Implementation notes, 2026-09-29:**
 
-- The open questions got these answers. Assets are `bytea`. The Postgres host stays open for ticket 13. The tests use the `compose.yaml` Postgres. The Note path stays the identity of a Note.
+- The open questions got these answers. Assets are removed, see below. The Postgres host stays open for ticket 13. The tests use the `compose.yaml` Postgres. The Note path stays the identity of a Note.
 - The `notes` table also has a `todo_count` column. The progress ring of the Overview needs the count of all Todos, not only the Open Todos.
 - Each test file gets its own database (`planner_test_<worker>`). Each test starts with empty tables through `TRUNCATE`. This costs less than a new database or schema for each test.
-- The Collection module has four new operations for the import and the export: Import Note, Import Asset, Export Notes and Export Assets. `src/collection/folder.ts` owns the file rules.
+- The Collection module has two new operations for the import and the export: Import Note and Export Notes. `src/collection/folder.ts` owns the file rules.
 - The tests that checked the file system are gone: the Collection path errors, the temporary dot-file of Update Note, and symbolic links at read time. The folder import tests now cover dot-files and symbolic links.
 - `compose.yaml` publishes Postgres on port 5433 by default, because another project uses 5432. `POSTGRES_PORT` changes it.
 - The reason stays "changed on disk", as this ticket asks. The Note view now says "This Note changed in another tab" for it, and "This Note no longer exists" for "not found".
 - The import refuses a `.md` file that is not valid UTF-8. A lossy decode would break the export round trip.
 - Both foreign keys to `user` use `ON DELETE CASCADE`. The account deletion from the GDPR work can then remove a User with one statement.
+
+**Assets removed, 2026-09-29, confirmed by the user:** I do not want image content as plain values in the database. This change removes the `assets` table, Asset by path, the `/assets/<path>` route and the image handling of the import and the export. The import skips images. A relative image in a Note does not load until a later ticket decides the storage of Assets. The acceptance criteria that name Assets now apply to Notes only.
