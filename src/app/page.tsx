@@ -1,23 +1,16 @@
 import Link from "next/link";
 import { connection } from "next/server";
-import { CollectionPathError, getOverview, type DayGroup } from "@/collection/collection";
+import { getOverview, type DayGroup } from "@/collection/collection";
 import { noteHref } from "@/collection/urls";
-import { collectionPath } from "./collection-path";
-import { CollectionPathErrorPage } from "./collection-path-error";
 import { fullDate, localToday, monthLabel, relativeDay, shortDate } from "./dates";
 import { FolderBadge } from "./folder-badge";
+import { ownerId } from "./owner";
 import { ProgressRing } from "./progress-ring";
 
 export default async function OverviewPage() {
   await connection();
   const today = localToday();
-  let groups: DayGroup[];
-  try {
-    groups = await getOverview(collectionPath());
-  } catch (error) {
-    if (error instanceof CollectionPathError) return <CollectionPathErrorPage message={error.message} />;
-    throw error;
-  }
+  const groups = await getOverview(await ownerId());
   const notes = groups.flatMap((group) => group.notes);
   const openTodoCount = notes.reduce((sum, note) => sum + note.openTodoCount, 0);
   const openNoteCount = notes.filter((note) => note.openTodoCount > 0).length;

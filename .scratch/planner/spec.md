@@ -8,9 +8,12 @@ I keep my notes and todos as Markdown files in a folder. I edit them in my own e
 
 ## Solution
 
-Planner is a local web app. It reads my Collection from disk at each page load. The Overview lists all Notes, grouped per Note date, with the newest day first. Each Note shows its Note title and its count of Open Todos. When I click a Note, the Note view shows its rendered content. Links to other Notes and images in the Collection work. When I change a Note in my editor, a browser refresh shows the change. Since ticket 06, I can also create a Note in the browser. Since ticket 07, I can edit a Note in the Note view, one block at a time, and tick a Todo. See `docs/adr/0001-the-app-creates-notes.md` and `docs/adr/0002-the-app-edits-notes.md`.
+Planner is a web app. Since ticket 11, it keeps my Collection in Postgres, and each User has their own Collection. See `docs/adr/0004-postgres-is-the-source-of-truth.md`. Before ticket 11, it read the Collection from disk at each page load. The Overview lists all Notes, grouped per Note date, with the newest day first. Each Note shows its Note title and its count of Open Todos. When I click a Note, the Note view shows its rendered content. Links to other Notes and images in the Collection work. Before ticket 11, a browser refresh showed a change from my editor. Since ticket 06, I can also create a Note in the browser. Since ticket 07, I can edit a Note in the Note view, one block at a time, and tick a Todo. See `docs/adr/0001-the-app-creates-notes.md` and `docs/adr/0002-the-app-edits-notes.md`.
 
 ## User Stories
+
+Ticket 11 retires stories 1 to 5, 8, 29 and 31. They describe the folder on disk and my own editor. `npm run import` and `npm run export` replace them.
+
 
 1. As the user, I want to set the Collection folder in an environment file, so that the app reads my Notes from the place where I keep them.
 2. As the user, I want the app to read all `.md` files in the Collection and its subfolders, so that my folder structure does not limit me.
@@ -47,37 +50,38 @@ Planner is a local web app. It reads my Collection from disk at each page load. 
 
 ## Implementation Decisions
 
-- **Stack**: Next.js with the App Router and TypeScript. Server components read the Collection directly from disk at each request. The app has no database, no API layer and no file watcher.
-- **Configuration**: By default, the Collection is the gitignored `collection` folder of the project. The environment variable `COLLECTION_PATH` in `.env.local` can give a different absolute path.
-- **Collection module**: One deep module owns all knowledge of the Collection. The Next.js pages only call it and render its result. Its interface has five operations:
-  - **Overview model**: It takes the Collection path. It returns the day groups, newest Note date first, with the Undated Notes as the last group. Each group holds its Notes in filename order. Each Note has its Note title, its Note path and its Open Todo count.
-  - **Note by path**: It takes a Note path. It returns the Note title, the Note content rendered to HTML, the version of the Note and its blocks. Each block has its character range, its Markdown and its HTML. For a path that is not a Note, or that resolves outside the Collection, it returns "not found".
-  - **Asset by path**: It takes a path. It returns the file content and its media type for an image inside the Collection. For a path outside the Collection, it returns "not found".
-  - **Create Note**: It takes the Note title, the body and the Note date. It writes a new Note to the Collection root and returns its Note path. It returns "exists" or "invalid title" on failure. It never overwrites a file. Ticket 06 gives the rules.
-  - **Update Note**: It takes the Note path, the version that the page loaded, the character range of a block and the new Markdown of that block. It replaces only that range and returns the new version. It returns "not found" or "changed on disk" on failure. Ticket 07 gives the rules.
-- **Note path**: The path of a Note relative to the Collection, without the `.md` extension, for example `work/2026-09-29-standup`. The Note view URL is `/notes/` followed by the Note path.
-- **Note date**: A `YYYY-MM-DD` prefix at the start of the filename. The Note date is one day.
-- **Note title**: The first `# ` heading in the body after the frontmatter. When the Note has no such heading, the Note title is the filename without the `.md` extension.
+- **Stack**: Next.js with the App Router and TypeScript. Server components read the Collection from Postgres at each request, through Drizzle ORM and the `postgres` driver. The app has no API layer.
+- **Configuration**: `DATABASE_URL` in `.env.local` gives the connection. `OWNER_EMAIL` gives the one User until ticket 09 ships. `compose.yaml` starts a local Postgres, with `POSTGRES_PASSWORD` from `.env.local`.
+- **Database**: The tables are `user`, in the Better Auth shape, and `notes`. Each Note has an owner id. The owner id and the Note path together are unique. Drizzle Kit owns the migrations in `drizzle/`. `npm run db:migrate` runs them and creates the User of `OWNER_EMAIL`.
+- **Import and export**: `npm run import -- <folder> --owner <email>` copies the `.md` files of a folder into the Collection. It skips images, because the app stores no Assets for now. It skips dot-files, dot-folders and symbolic links. It creates only, and it lists each path that exists. `--dry-run` lists what it would create. `npm run export -- <folder> --owner <email>` writes the Collection back to an empty folder.
+- **Collection module**: One deep module owns all knowledge of the Collection. The Next.js pages only call it and render its result. Each operation takes the owner id, and every query filters on it. Its interface has four operations:
+  - **Overview model**: It takes the owner id. It returns the day groups, newest Note date first, with the Undated Notes as the last group. Each group holds its Notes in filename order. Each Note has its Note title, its Note path and its Open Todo count. The Overview reads these values from columns that each write computes.
+  - **Note by path**: It takes a Note path. It returns the Note title, the Note content rendered to HTML, the version of the Note and its blocks. Each block has its character range, its Markdown and its HTML. For a path that is not a Note of the Owner, it returns "not found".
+  - **Create Note**: It takes the Note title, the body and the Note date. It creates a new Note in the Collection root and returns its Note path. It returns "exists" or "invalid title" on failure. The unique index stops an overwrite. Ticket 06 gives the rules.
+  - **Update Note**: It takes the Note path, the version that the page loaded, the character range of a block and the new Markdown of that block. It replaces only that range and returns the new version. The `UPDATE` checks the version itself, so the check and the write are one step. It returns "not found" or "changed on disk" on failure. Ticket 07 gives the rules.
+- **Note path**: The path of a Note in the Collection, without the `.md` extension, for example `work/2026-09-29-standup`. The Note view URL is `/notes/` followed by the Note path.
+- **Note date**: A `YYYY-MM-DD` prefix at the start of the last segment of the Note path. The Note date is one day.
+- **Note title**: The first `# ` heading in the body after the frontmatter. When the Note has no such heading, the Note title is the last segment of the Note path.
 - **Open Todo count**: The count of unchecked GFM task-list items at all nesting levels. The count comes from the parsed Markdown tree, so a checkbox inside a code block does not count.
 - **Markdown rendering**: GitHub-flavoured Markdown. The renderer strips the frontmatter. Each task-list checkbox gives the offset of its mark in the file, so a click can tick it.
-- **Block editing**: A block is one top-level element, or one top-level list item. A click opens it as a text field with its Markdown source. It saves on blur and after 2 seconds without typing. The version check refuses a save after a change on disk.
+- **Block editing**: A block is one top-level element, or one top-level list item. A click opens it as a text field with its Markdown source. It saves on blur and after 2 seconds without typing. The version check refuses a save after a change in another tab.
 - **Network**: The app binds to `127.0.0.1` in `dev` and in `start`.
-- **Link rewriting**: The renderer resolves a relative link to a `.md` file against the folder of the current Note, and rewrites it to that Note's Note view URL. It rewrites a relative image source to the asset URL. It does not change external links. It prefixes anchor links and heading ids with `user-content-`, as GitHub does.
-- **Path containment**: The Collection module resolves every requested path and rejects it when it does not stay inside the Collection. This applies to Note by path and to Asset by path.
-- **Skipped files**: The module skips dot-files and dot-folders at every level. It treats only `.md` files as Notes.
+- **Link rewriting**: The renderer resolves a relative link to a `.md` file against the folder of the current Note, and rewrites it to that Note's Note view URL. It rewrites a relative image source to the asset URL. Since ticket 11, no route serves that URL, so the image does not load. It does not change external links. It prefixes anchor links and heading ids with `user-content-`, as GitHub does.
+- **Owner isolation**: No operation can read or change a Note of another User.
+- **Skipped files**: The import skips dot-files and dot-folders at every level. It treats only `.md` files as Notes.
 
 ## Testing Decisions
 
 - A good test checks external behaviour through the Collection module interface. It does not check internal helpers, parser details or HTML structure beyond what the user sees.
-- The tests create a temporary Collection folder with fixture Notes, subfolders, dot-folders and images. They then call the three operations.
-- The tests cover the day grouping and its order, the Undated group, the filename order in one day, the Note title fallback, the Open Todo count with nested items and code blocks, the link rewriting, the disabled checkboxes, the hidden frontmatter and the path containment for Notes and assets.
+- The tests run the Collection module against a real Postgres. Each test file gets its own database, and each test starts with empty tables. The import and export tests also use a temporary folder.
+- The tests cover the day grouping and its order, the Undated group, the filename order in one day, the Note title fallback, the Open Todo count with nested items and code blocks, the link rewriting, the disabled checkboxes, the hidden frontmatter, the owner isolation, the version check in the `UPDATE`, and the import and export round trip.
 - The Next.js pages have no tests of their own. Version 1 has no browser end-to-end tests.
 - The repo is empty, so there is no prior art for tests.
 
 ## Out of Scope
 
 - Deleting or renaming Notes in the browser. Ticket 06 moved the creation of a Note into scope, and ticket 07 moved editing and ticking Todos into scope.
-- Hosting, authentication and more than one user.
+- Hosting. Ticket 09 adds authentication, and ticket 13 hosts the app. More than one User is in scope since ticket 11.
 - Automatic page updates from a file watcher.
 - A Note date from frontmatter or from file-system times.
 - Grouping per week or per month.
@@ -90,5 +94,4 @@ Planner is a local web app. It reads my Collection from disk at each page load. 
 - **The look of the UI is decided.** Ticket 01 records it: "Bold day bands" for the Overview and "Gradient hero" for the Note view, built with Tailwind CSS and its typography plugin. The prototype is on the `prototype/ui` branch.
 - **Assumptions to confirm**:
   - A filename with an invalid date prefix, for example `2026-13-40-x.md`, gives an Undated Note.
-  - A missing or wrong Collection path gives a clear error page that names the environment variable.
   - The Note title fallback keeps the date prefix of the filename.

@@ -1,6 +1,6 @@
 # 2. The app edits Notes and binds to 127.0.0.1
 
-Status: accepted, 2026-09-29
+Status: accepted, 2026-09-29. ADR 0004 supersedes the file-based parts.
 
 Supersedes the network part of `0001-the-app-creates-notes.md`.
 
