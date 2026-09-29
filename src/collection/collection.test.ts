@@ -20,11 +20,24 @@ async function addFile(path: string, content = "") {
   await writeFile(file, content);
 }
 
+async function locations() {
+  const groups = await getOverview(collection);
+  return groups.map(({ date, notes }) => ({
+    date,
+    notes: notes.map(({ path, filename }) => ({ path, filename })),
+  }));
+}
+
+async function onlyNote() {
+  const [{ notes }] = await getOverview(collection);
+  return notes[0];
+}
+
 describe("getOverview", () => {
   it("puts a dated Note in the group of its Note date", async () => {
     await addFile("2026-09-29-standup.md");
 
-    expect(await getOverview(collection)).toEqual([
+    expect(await locations()).toEqual([
       {
         date: "2026-09-29",
         notes: [{ path: "2026-09-29-standup", filename: "2026-09-29-standup.md" }],
@@ -35,7 +48,7 @@ describe("getOverview", () => {
   it("reads Notes in all subfolders, with the Note path relative to the Collection", async () => {
     await addFile("work/deep/2026-09-29-retro.md");
 
-    expect(await getOverview(collection)).toEqual([
+    expect(await locations()).toEqual([
       {
         date: "2026-09-29",
         notes: [{ path: "work/deep/2026-09-29-retro", filename: "2026-09-29-retro.md" }],
@@ -50,7 +63,7 @@ describe("getOverview", () => {
     await addFile("reading/2026-09-29-book.md");
     await addFile("2025-12-31-year-end.md");
 
-    expect(await getOverview(collection)).toEqual([
+    expect(await locations()).toEqual([
       {
         date: "2026-09-29",
         notes: [
@@ -79,7 +92,7 @@ describe("getOverview", () => {
     await addFile("2026-09-29.md");
     await addFile("reading/Books.md");
 
-    expect(await getOverview(collection)).toEqual([
+    expect(await locations()).toEqual([
       {
         date: "2026-09-29",
         notes: [{ path: "2026-09-29", filename: "2026-09-29.md" }],
@@ -109,7 +122,7 @@ describe("getOverview", () => {
     await addFile("2026-09-29-diagram.png");
     await addFile("2026-09-29-draft.markdown");
 
-    expect(await getOverview(collection)).toEqual([
+    expect(await locations()).toEqual([
       {
         date: "2026-09-29",
         notes: [{ path: "2026-09-29-standup", filename: "2026-09-29-standup.md" }],
@@ -136,11 +149,83 @@ describe("getOverview", () => {
     await addFile("2026-09-29-new.md");
     await unlink(join(collection, "2026-09-28-old.md"));
 
-    expect(await getOverview(collection)).toEqual([
+    expect(await locations()).toEqual([
       {
         date: "2026-09-29",
         notes: [{ path: "2026-09-29-new", filename: "2026-09-29-new.md" }],
       },
     ]);
+  });
+
+  describe("Note title", () => {
+    it("is the text of the first # heading after the frontmatter", async () => {
+      await addFile(
+        "2026-09-29-standup.md",
+        ["---", "title: Not this", "---", "", "Intro text.", "", "## Agenda", "", "# Daily *standup*", "", "# Second"].join("\n"),
+      );
+
+      expect((await onlyNote()).title).toBe("Daily standup");
+    });
+
+    it("falls back to the filename without .md and keeps the date prefix", async () => {
+      await addFile("work/2026-09-29-standup.md", "## Only a sub-heading\n\nSome text.");
+
+      expect((await onlyNote()).title).toBe("2026-09-29-standup");
+    });
+
+    it("ignores a # line inside a code block or the frontmatter", async () => {
+      await addFile("ideas.md", ["---", "# not: a heading", "---", "```sh", "# a shell comment", "```"].join("\n"));
+
+      expect((await onlyNote()).title).toBe("ideas");
+    });
+
+    it("skips an empty # heading and a # heading inside a list or a block quote", async () => {
+      await addFile("ideas.md", ["#", "", "- # In a list", "", "> # In a quote", "", "Real title", "==="].join("\n"));
+
+      expect((await onlyNote()).title).toBe("Real title");
+    });
+
+    it("drops inline HTML and image alt text, and skips TOML frontmatter", async () => {
+      await addFile("ideas.md", ["+++", "title = 'x'", "+++", "# Plan <b>B</b> ![logo](logo.png) `v2`"].join("\n"));
+
+      expect((await onlyNote()).title).toBe("Plan B v2");
+    });
+  });
+
+  describe("Open Todo count", () => {
+    it("counts Open Todos at all nesting levels, and all Todos", async () => {
+      await addFile(
+        "2026-09-29-standup.md",
+        [
+          "- [ ] Top open",
+          "- [x] Top done",
+          "  - [ ] Nested open",
+          "    - [ ] Deeper open",
+          "    - [X] Deeper done",
+          "- A plain item",
+          "",
+          "1. [ ] Numbered open",
+          "",
+          "> - [ ] Quoted open",
+        ].join("\n"),
+      );
+
+      expect(await onlyNote()).toMatchObject({ openTodoCount: 5, todoCount: 7 });
+    });
+
+    it("skips checkboxes inside code blocks", async () => {
+      await addFile(
+        "2026-09-29-standup.md",
+        ["- [ ] Real", "", "```md", "- [ ] Example", "- [x] Example", "```", "", "    - [ ] Indented code"].join("\n"),
+      );
+
+      expect(await onlyNote()).toMatchObject({ openTodoCount: 1, todoCount: 1 });
+    });
+
+    it("is zero for a Note without Todos", async () => {
+      await addFile("2026-09-29-standup.md", "# Standup\n\n- Just a list");
+
+      expect(await onlyNote()).toMatchObject({ openTodoCount: 0, todoCount: 0 });
+    });
   });
 });

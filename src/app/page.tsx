@@ -2,6 +2,7 @@ import { connection } from "next/server";
 import { CollectionPathError, getOverview, type DayGroup } from "@/collection/collection";
 import { fullDate, localToday, monthLabel, relativeDay, shortDate } from "./dates";
 import { FolderBadge } from "./folder-badge";
+import { ProgressRing } from "./progress-ring";
 
 const COLLECTION_PATH_VARIABLE = "COLLECTION_PATH";
 
@@ -15,7 +16,9 @@ export default async function OverviewPage() {
     if (error instanceof CollectionPathError) return <CollectionPathErrorPage message={error.message} />;
     throw error;
   }
-  const noteCount = groups.reduce((sum, group) => sum + group.notes.length, 0);
+  const notes = groups.flatMap((group) => group.notes);
+  const openTodoCount = notes.reduce((sum, note) => sum + note.openTodoCount, 0);
+  const openNoteCount = notes.filter((note) => note.openTodoCount > 0).length;
 
   return (
     <div className="min-h-screen w-full bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
@@ -23,8 +26,11 @@ export default async function OverviewPage() {
         <div className="mx-auto max-w-3xl">
           <p className="text-sm text-violet-200">{fullDate(today)}</p>
           <h1 className="mt-1 text-4xl font-black tracking-tight">
-            {noteCount} {noteCount === 1 ? "note" : "notes"}
+            {openTodoCount} open {openTodoCount === 1 ? "todo" : "todos"}
           </h1>
+          <p className="mt-2 text-violet-200">
+            across {openNoteCount} of {notes.length} {notes.length === 1 ? "note" : "notes"}
+          </p>
         </div>
       </header>
       <main className="mx-auto max-w-3xl px-6 pb-16">
@@ -76,7 +82,8 @@ function DaySection({
               date ? "border-neutral-200 dark:border-neutral-800" : "border-dashed border-neutral-300 dark:border-neutral-700"
             }`}
           >
-            <span className="flex-1 font-semibold">{note.filename}</span>
+            <ProgressRing openTodoCount={note.openTodoCount} todoCount={note.todoCount} />
+            <span className="flex-1 font-semibold">{note.title}</span>
             <FolderBadge notePath={note.path} />
           </li>
         ))}
