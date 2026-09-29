@@ -1,8 +1,9 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CollectionPathError, createNote, getAsset, getNote, getOverview } from "./collection";
+import { CollectionPathError, createNote, getAsset, getNote, getOverview, updateNote } from "./collection";
 
 let collection: string;
 
@@ -257,15 +258,56 @@ describe("getNote", () => {
     expect(html).toMatch(/<pre><code class="language-ts">const a = 1 (&lt;|&#x3C;) 2;/);
   });
 
-  it("shows the state of each checkbox and disables it", async () => {
-    await addFile("ideas.md", ["- [ ] Open", "- [x] Done", "  - [ ] Nested"].join("\n"));
+  it("shows the state of each checkbox, with the offset of its mark in the file", async () => {
+    await addFile("ideas.md", ["- [ ] Open", "- [x] Done", "  - [ ] Nested", "", "> 1. [X] Quoted"].join("\n"));
 
     const html = (await getNote(collection, "ideas"))?.html ?? "";
 
     expect(html.match(/<input[^>]*>/g)).toEqual([
-      '<input type="checkbox" disabled>',
-      '<input type="checkbox" checked disabled>',
-      '<input type="checkbox" disabled>',
+      '<input type="checkbox" data-offset="3">',
+      '<input type="checkbox" checked data-offset="14">',
+      '<input type="checkbox" data-offset="27">',
+      '<input type="checkbox" checked data-offset="44">',
+    ]);
+  });
+
+  it("gives the SHA-256 hash of the file content as the version, and the length of the content", async () => {
+    await addFile("ideas.md", "# Ideas\n\nCafé\n");
+
+    expect(await getNote(collection, "ideas")).toMatchObject({
+      version: createHash("sha256").update("# Ideas\n\nCafé\n").digest("hex"),
+      length: 14,
+    });
+  });
+
+  it("gives each top-level element as a block, with its character range, Markdown and HTML", async () => {
+    await addFile("ideas.md", ["---", "tags: x", "---", "# Ideas", "", "Some *text*.", "", "```", "code", "```"].join("\n"));
+
+    expect((await getNote(collection, "ideas"))?.blocks).toEqual([
+      { start: 16, end: 23, markdown: "# Ideas", html: '<h1 id="user-content-ideas">Ideas</h1>' },
+      { start: 25, end: 37, markdown: "Some *text*.", html: "<p>Some <em>text</em>.</p>" },
+      { start: 39, end: 51, markdown: "```\ncode\n```", html: "<pre><code>code\n</code></pre>" },
+    ]);
+  });
+
+  it("gives each top-level list item as a block with its nested items, and keeps the list number", async () => {
+    await addFile("ideas.md", ["- [ ] One", "  - Nested", "- Two", "", "3. Three", "4. Four"].join("\n"));
+
+    const blocks = (await getNote(collection, "ideas"))?.blocks ?? [];
+
+    expect(blocks.map(({ markdown }) => markdown)).toEqual(["- [ ] One\n  - Nested", "- Two", "3. Three", "4. Four"]);
+    expect(blocks[0].html).toMatch(/^<ul class="contains-task-list">\n<li class="task-list-item">[\s\S]*Nested/);
+    expect(blocks[1].html).toBe('<ul class="contains-task-list">\n<li>Two</li>\n</ul>');
+    expect(blocks[2].html).toBe('<ol start="3">\n<li>Three</li>\n</ol>');
+    expect(blocks[3].html).toBe('<ol start="4">\n<li>Four</li>\n</ol>');
+  });
+
+  it("gives an empty HTML for a block that renders nothing, such as a link definition", async () => {
+    await addFile("ideas.md", ["See [docs][d].", "", "[d]: https://example.com"].join("\n"));
+
+    expect((await getNote(collection, "ideas"))?.blocks).toEqual([
+      { start: 0, end: 14, markdown: "See [docs][d].", html: '<p>See <a href="https://example.com">docs</a>.</p>' },
+      { start: 16, end: 40, markdown: "[d]: https://example.com", html: "" },
     ]);
   });
 
@@ -642,5 +684,190 @@ describe("createNote", () => {
     await expect(
       createNote(join(collection, "missing"), { title: "Weekly review", body: "", date }),
     ).rejects.toBeInstanceOf(CollectionPathError);
+  });
+});
+
+describe("updateNote", () => {
+  const path = "work/ideas";
+  const file = () => join(collection, "work/ideas.md");
+
+  async function note() {
+    const loaded = await getNote(collection, path);
+    if (!loaded) throw new Error("The fixture Note is missing");
+    return loaded;
+  }
+
+  async function update(range: { start: number; end: number }, markdown: string, version?: string) {
+    return updateNote(collection, { path, version: version ?? (await note()).version, range, markdown });
+  }
+
+  async function updateBlock(index: number, markdown: string) {
+    const { blocks } = await note();
+    return update(blocks[index], markdown);
+  }
+
+  it("replaces only the characters of the block, and keeps the frontmatter and all other bytes", async () => {
+    const before = ["---", "title: Keep  me", "---", "# Ideas", "", "Old  *text*", "", "* list   item", ""].join("\n");
+    await addFile("work/ideas.md", before);
+
+    const result = await updateBlock(1, "New text");
+
+    const after = await readFile(file(), "utf8");
+    expect(after).toBe(before.replace("Old  *text*", "New text"));
+    expect(result).toEqual({
+      version: createHash("sha256").update(after).digest("hex"),
+      range: { start: 33, end: 41 },
+    });
+    expect((await note()).version).toBe(createHash("sha256").update(after).digest("hex"));
+  });
+
+  it("writes through a temporary dot-file in the folder of the Note, and renames it over the Note", async () => {
+    await addFile("work/ideas.md", "Old");
+    const inodeBefore = (await stat(file())).ino;
+
+    await updateBlock(0, "New");
+
+    expect((await stat(file())).ino).not.toBe(inodeBefore);
+    expect(await readdir(join(collection, "work"))).toEqual(["ideas.md"]);
+  });
+
+  it("gives changed on disk for an old version, and keeps the file unchanged", async () => {
+    await addFile("work/ideas.md", "Old");
+    const { version, blocks } = await note();
+    await addFile("work/ideas.md", "Changed in my editor");
+
+    expect(await update(blocks[0], "New", version)).toEqual({ reason: "changed on disk" });
+    expect(await readFile(file(), "utf8")).toBe("Changed in my editor");
+  });
+
+  it("gives not found for a Note that was deleted", async () => {
+    await addFile("work/ideas.md", "Old");
+    const { version, blocks } = await note();
+    await unlink(file());
+
+    expect(await update(blocks[0], "New", version)).toEqual({ reason: "not found" });
+    expect(await readdir(join(collection, "work"))).toEqual([]);
+  });
+
+  it.each([
+    ["a parent segment that leaves the Collection", "../outside"],
+    ["a parent segment inside the path", "work/../../outside"],
+    ["a dot-file Note", "work/.hidden"],
+    ["a Note in a dot-folder", ".obsidian/workspace"],
+    ["the .md extension", "work/ideas.md"],
+    ["an absolute path", "/etc/hosts"],
+  ])("gives not found for %s, and writes nothing", async (_, notePath) => {
+    await addFile("notes/work/ideas.md", "Inside");
+    await addFile("notes/work/.hidden.md", "Hidden");
+    await addFile("notes/.obsidian/workspace.md", "Tool data");
+    await addFile("outside.md", "Outside");
+    const version = createHash("sha256").update("Outside").digest("hex");
+
+    expect(
+      await updateNote(join(collection, "notes"), { path: notePath, version, range: { start: 0, end: 6 }, markdown: "X" }),
+    ).toEqual({ reason: "not found" });
+    expect(await readFile(join(collection, "outside.md"), "utf8")).toBe("Outside");
+    expect(await readFile(join(collection, "notes/work/.hidden.md"), "utf8")).toBe("Hidden");
+  });
+
+  it("gives not found for a symbolic link that leaves the Collection, and writes nothing", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "planner-outside-"));
+    try {
+      await writeFile(join(outside, "secret.md"), "Secret");
+      await symlink(join(outside, "secret.md"), join(collection, "secret.md"));
+      await symlink(outside, join(collection, "linked"));
+      const version = createHash("sha256").update("Secret").digest("hex");
+
+      for (const notePath of ["secret", "linked/secret"]) {
+        expect(
+          await updateNote(collection, { path: notePath, version, range: { start: 0, end: 6 }, markdown: "X" }),
+        ).toEqual({ reason: "not found" });
+      }
+      expect(await readFile(join(outside, "secret.md"), "utf8")).toBe("Secret");
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("ticks and unticks a nested Todo in a list item block", async () => {
+    await addFile("work/ideas.md", ["- [ ] Plan", "  - [x] Book a room", "- [ ] Later", ""].join("\n"));
+    const [block] = (await note()).blocks;
+
+    await update(block, block.markdown.replace("[ ] Plan", "[x] Plan").replace("[x] Book", "[ ] Book"));
+
+    expect(await readFile(file(), "utf8")).toBe(["- [x] Plan", "  - [ ] Book a room", "- [ ] Later", ""].join("\n"));
+    expect(await note()).toMatchObject({ openTodoCount: 2, todoCount: 3 });
+  });
+
+  it("splits a block at an empty line, so the parts become separate blocks", async () => {
+    await addFile("work/ideas.md", "# Ideas\n\nOne\n");
+
+    const result = await updateBlock(1, "One\n\nTwo");
+
+    expect(result).toMatchObject({ range: { start: 9, end: 17 } });
+    expect((await note()).blocks.map(({ markdown }) => markdown)).toEqual(["# Ideas", "One", "Two"]);
+  });
+
+  it("drops the blank lines and whitespace at the start and the end of the new Markdown", async () => {
+    await addFile("work/ideas.md", "One\n\nTwo\n");
+
+    await updateBlock(0, "\n  \nNew  \n\n");
+
+    expect(await readFile(file(), "utf8")).toBe("New\n\nTwo\n");
+  });
+
+  it("keeps the CRLF line endings of a file", async () => {
+    await addFile("work/ideas.md", "One\r\n\r\nTwo\r\n");
+
+    await updateBlock(0, "New\nlines");
+
+    expect(await readFile(file(), "utf8")).toBe("New\r\nlines\r\n\r\nTwo\r\n");
+  });
+
+  it.each([
+    ["a paragraph between two blocks", "One\n\nTwo\n\nThree\n", 1, "One\n\nThree\n"],
+    ["a list item in a tight list", "- a\n- b\n- c\n", 1, "- a\n- c\n"],
+    ["the last block", "---\nx: 1\n---\n\nOne\n\nTwo\n", 1, "---\nx: 1\n---\n\nOne\n"],
+    ["the only block after the frontmatter", "---\nx: 1\n---\n\nOne\n", 0, "---\nx: 1\n---\n"],
+    ["the only block", "One\n", 0, ""],
+  ])("removes %s with no text, and its blank lines", async (_, before, index, after) => {
+    await addFile("work/ideas.md", before);
+
+    const result = await updateBlock(index, " \n ");
+
+    expect(await readFile(file(), "utf8")).toBe(after);
+    expect(result).toMatchObject({ range: { start: expect.any(Number) } });
+  });
+
+  it.each([
+    ["after a paragraph", "One\n", "Two", "One\n\nTwo\n", 5],
+    ["after a file without a final newline", "One", "Two", "One\n\nTwo\n", 5],
+    ["to a list, as an item of the same list", "- [ ] a\n\n\n", "- [ ] b", "- [ ] a\n- [ ] b\n", 8],
+    ["after a list, as a paragraph", "- a\n", "Two", "- a\n\nTwo\n", 5],
+    ["after the frontmatter", "---\nx: 1\n---\n", "One", "---\nx: 1\n---\n\nOne\n", 14],
+    ["to an empty Note", "", "One", "One\n", 0],
+  ])("adds a block at the end %s", async (_, before, markdown, after, start) => {
+    await addFile("work/ideas.md", before);
+    const { length } = await note();
+
+    const result = await update({ start: length, end: length }, markdown);
+
+    expect(await readFile(file(), "utf8")).toBe(after);
+    expect(result).toMatchObject({ range: { start, end: start + markdown.length } });
+  });
+
+  it.each([
+    ["inside the frontmatter", { start: 4, end: 8 }],
+    ["that overlaps the frontmatter", { start: 10, end: 16 }],
+    ["that starts at the line break after the frontmatter", { start: 12, end: 17 }],
+    ["that ends after the file", { start: 15, end: 99 }],
+    ["that ends before it starts", { start: 17, end: 16 }],
+    ["that is empty before the end of the file", { start: 15, end: 15 }],
+    ["with a fraction", { start: 15.5, end: 18 }],
+  ])("throws for a range %s, and keeps the file unchanged", async (_, range) => {
+    await addFile("work/ideas.md", "---\nx: 1\n---\n\nOne\n");
+
+    await expect(update(range, "New")).rejects.toThrow();
+    expect(await readFile(file(), "utf8")).toBe("---\nx: 1\n---\n\nOne\n");
   });
 });

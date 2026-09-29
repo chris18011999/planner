@@ -1,6 +1,6 @@
 # Planner
 
-A view of a personal collection of Markdown notes and the todos inside them. The app can create a Note. It cannot change or delete a Note.
+A view of a personal collection of Markdown notes and the todos inside them. The app can create a Note, and edit a Note one block at a time. It cannot delete or rename a Note.
 
 ## Language
 
@@ -45,5 +45,13 @@ The view that lists all Notes, grouped per Note date with the newest day first. 
 _Avoid_: Dashboard, index, home
 
 **Note view**:
-The view that shows the content of one Note.
+The view that shows the content of one Note. A click on a block opens it for editing.
 _Avoid_: Detail page, note page
+
+**Block**:
+One top-level element of a Note, or one top-level list item with its nested items. The Note view edits one block at a time.
+_Avoid_: Section, paragraph, chunk
+
+**Version**:
+The SHA-256 hash of the file content of a Note. A save with an old version fails with "changed on disk".
+_Avoid_: Revision, timestamp, etag
