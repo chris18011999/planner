@@ -30,6 +30,9 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# the local Collection of Notes
+/collection/
+
 # env files (can opt-in for committing if needed)
 .env*
 

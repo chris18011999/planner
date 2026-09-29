@@ -48,7 +48,7 @@ Planner is a local, read-only web app. It reads my Collection from disk at each 
 ## Implementation Decisions
 
 - **Stack**: Next.js with the App Router and TypeScript. Server components read the Collection directly from disk at each request. The app has no database, no API layer and no file watcher.
-- **Configuration**: One environment variable in `.env.local` holds the absolute path of the Collection.
+- **Configuration**: By default, the Collection is the gitignored `collection` folder of the project. The environment variable `COLLECTION_PATH` in `.env.local` can give a different absolute path.
 - **Collection module**: One deep module owns all knowledge of the Collection. The Next.js pages only call it and render its result. Its interface has three operations:
   - **Overview model**: It takes the Collection path. It returns the day groups, newest Note date first, with the Undated Notes as the last group. Each group holds its Notes in filename order. Each Note has its Note title, its Note path and its Open Todo count.
   - **Note by path**: It takes a Note path. It returns the Note title and the Note content rendered to HTML. For a path that is not a Note, or that resolves outside the Collection, it returns "not found".

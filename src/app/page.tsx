@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { connection } from "next/server";
 import { CollectionPathError, getOverview, noteHref, type DayGroup } from "@/collection/collection";
-import { COLLECTION_PATH_VARIABLE, CollectionPathErrorPage } from "./collection-path-error";
+import { collectionPath } from "./collection-path";
+import { CollectionPathErrorPage } from "./collection-path-error";
 import { fullDate, localToday, monthLabel, relativeDay, shortDate } from "./dates";
 import { FolderBadge } from "./folder-badge";
 import { ProgressRing } from "./progress-ring";
@@ -11,7 +12,7 @@ export default async function OverviewPage() {
   const today = localToday();
   let groups: DayGroup[];
   try {
-    groups = await getOverview(process.env[COLLECTION_PATH_VARIABLE]);
+    groups = await getOverview(collectionPath());
   } catch (error) {
     if (error instanceof CollectionPathError) return <CollectionPathErrorPage message={error.message} />;
     throw error;

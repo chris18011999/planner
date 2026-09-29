@@ -2,7 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import { CollectionPathError, getNote, type Note } from "@/collection/collection";
-import { COLLECTION_PATH_VARIABLE, CollectionPathErrorPage } from "../../collection-path-error";
+import { collectionPath } from "../../collection-path";
+import { CollectionPathErrorPage } from "../../collection-path-error";
 import { fullDate, localToday, relativeDay } from "../../dates";
 import { FolderBadge } from "../../folder-badge";
 import { ProgressRing } from "../../progress-ring";
@@ -16,7 +17,7 @@ export default async function NoteViewPage({ params }: PageProps<"/notes/[...pat
   if (notePath === null) notFound();
   let note: Note | null;
   try {
-    note = await getNote(process.env[COLLECTION_PATH_VARIABLE], notePath);
+    note = await getNote(collectionPath(), notePath);
   } catch (error) {
     if (error instanceof CollectionPathError) return <CollectionPathErrorPage message={error.message} />;
     throw error;
