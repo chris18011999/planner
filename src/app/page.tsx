@@ -26,7 +26,15 @@ export default async function OverviewPage() {
     <div className="min-h-screen w-full bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
       <header className="bg-gradient-to-br from-violet-600 to-indigo-700 px-6 pb-10 pt-12 text-white">
         <div className="mx-auto max-w-3xl">
-          <p className="text-sm text-violet-200">{fullDate(today)}</p>
+          <div className="flex items-center justify-between gap-6">
+            <p className="text-sm text-violet-200">{fullDate(today)}</p>
+            <Link
+              href="/new"
+              className="rounded-lg bg-white/15 px-3 py-1.5 text-sm font-semibold backdrop-blur hover:bg-white/25"
+            >
+              New note
+            </Link>
+          </div>
           <h1 className="mt-1 text-4xl font-black tracking-tight">
             {openTodoCount} open {openTodoCount === 1 ? "todo" : "todos"}
           </h1>

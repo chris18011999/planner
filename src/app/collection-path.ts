@@ -1,8 +1,5 @@
 import { join } from "node:path";
-
-export const COLLECTION_PATH_VARIABLE = "COLLECTION_PATH";
-
-export const DEFAULT_COLLECTION_FOLDER = "collection";
+import { COLLECTION_PATH_VARIABLE, DEFAULT_COLLECTION_FOLDER } from "./collection-path-names";
 
 export function collectionPath() {
   return process.env[COLLECTION_PATH_VARIABLE] || join(process.cwd(), DEFAULT_COLLECTION_FOLDER);

@@ -1,6 +1,6 @@
 # Planner
 
-A read-only view of a personal collection of Markdown notes and the todos inside them.
+A view of a personal collection of Markdown notes and the todos inside them. The app can create a Note. It cannot change or delete a Note.
 
 ## Language
 
@@ -35,6 +35,10 @@ _Avoid_: Created date, modified date, timestamp
 **Undated Note**:
 A Note whose filename has no Note date.
 _Avoid_: Unsorted, misc
+
+**New Note form**:
+The form at `/new` that creates a Note in the Collection root. The filename is the Note date of today, a `-` and a slug of the Note title.
+_Avoid_: Editor, compose page
 
 **Overview**:
 The view that lists all Notes, grouped per Note date with the newest day first. The Undated Notes form the last group.

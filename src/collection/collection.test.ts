@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CollectionPathError, getAsset, getNote, getOverview } from "./collection";
+import { CollectionPathError, createNote, getAsset, getNote, getOverview } from "./collection";
 
 let collection: string;
 
@@ -526,3 +526,121 @@ describe("getAsset", () => {
   });
 });
 
+
+describe("createNote", () => {
+  const date = "2026-09-29";
+
+  it("writes the Note to the Collection root and gives its Note path", async () => {
+    const result = await createNote(collection, { title: "Weekly review", body: "- [ ] Plan", date });
+
+    expect(result).toEqual({ path: "2026-09-29-weekly-review" });
+    expect(await readFile(join(collection, "2026-09-29-weekly-review.md"), "utf8")).toBe(
+      "# Weekly review\n\n- [ ] Plan\n",
+    );
+  });
+
+  it.each([
+    ["diacritics as plain letters", "Café crème à Zürich", "cafe-creme-a-zurich"],
+    ["the letters that NFKD keeps", "Straße Æble Øre Œuvre Łódź", "strasse-aeble-ore-oeuvre-lodz"],
+    ["one - for each run of other characters", "Q3 -- plan: 50% & more!", "q3-plan-50-more"],
+    ["no - at the start or the end", "  (Draft) ideas?  ", "draft-ideas"],
+    ["the path of a parent folder", "../../etc/x", "etc-x"],
+    ["a dot-file name", ".hidden", "hidden"],
+    [
+      "a cut at the last - before 60 characters",
+      "one two three four five six seven eight nine ten eleven twelve",
+      "one-two-three-four-five-six-seven-eight-nine-ten-eleven",
+    ],
+    ["a cut of a word longer than 60 characters", "a".repeat(70), "a".repeat(60)],
+    ["60 full characters when a - follows them", `${"a".repeat(60)} b`, "a".repeat(60)],
+  ])("makes a slug with %s", async (_, title, expectedSlug) => {
+    const result = await createNote(collection, { title, body: "", date });
+
+    expect(result).toEqual({ path: `2026-09-29-${expectedSlug}` });
+    expect(await readdir(collection)).toEqual([`2026-09-29-${expectedSlug}.md`]);
+  });
+
+  it.each([
+    ["an empty title", ""],
+    ["a title with only whitespace", "   "],
+    ["a title with only punctuation", "?!-"],
+    ["a title without Latin letters or digits", "会議"],
+    ["an emoji title", "🎉"],
+    ["a title with a newline", "Weekly\nreview"],
+    ["a title with a carriage return", "Weekly\rreview"],
+  ])("gives invalid title for %s and writes no file", async (_, title) => {
+    expect(await createNote(collection, { title, body: "Body", date })).toEqual({ reason: "invalid title" });
+    expect(await readdir(collection)).toEqual([]);
+  });
+
+  it("trims the whitespace around the Note title", async () => {
+    await createNote(collection, { title: "  Weekly review \t", body: "", date });
+
+    expect(await readFile(join(collection, "2026-09-29-weekly-review.md"), "utf8")).toBe("# Weekly review\n");
+  });
+
+  it("writes only the heading and a newline for an empty body", async () => {
+    await createNote(collection, { title: "Weekly review", body: "", date });
+
+    expect(await readFile(join(collection, "2026-09-29-weekly-review.md"), "utf8")).toBe("# Weekly review\n");
+  });
+
+  it("gives the body LF line endings and one final newline, without frontmatter", async () => {
+    await createNote(collection, { title: "Weekly review", body: "---\r\none\r\ntwo\rthree\n\n\n", date });
+
+    expect(await readFile(join(collection, "2026-09-29-weekly-review.md"), "utf8")).toBe(
+      "# Weekly review\n\n---\none\ntwo\nthree\n",
+    );
+  });
+
+  it("gives exists and keeps the existing file unchanged", async () => {
+    await addFile("2026-09-29-weekly-review.md", "my own text");
+
+    expect(await createNote(collection, { title: "Weekly review!", body: "New", date })).toEqual({ reason: "exists" });
+    expect(await readFile(join(collection, "2026-09-29-weekly-review.md"), "utf8")).toBe("my own text");
+  });
+
+  it("gives exists for a folder with the same name", async () => {
+    await addFile("2026-09-29-weekly-review.md/inside.md");
+
+    expect(await createNote(collection, { title: "Weekly review", body: "", date })).toEqual({ reason: "exists" });
+  });
+
+  it("creates no folders, also when a Note with the same title is in a subfolder", async () => {
+    await addFile("work/2026-09-29-weekly-review.md", "work");
+
+    expect(await createNote(collection, { title: "Weekly review", body: "", date })).toEqual({
+      path: "2026-09-29-weekly-review",
+    });
+    expect((await readdir(collection)).sort()).toEqual(["2026-09-29-weekly-review.md", "work"]);
+  });
+
+  it("shows the new Note in the Overview and in Note by path", async () => {
+    await createNote(collection, { title: "Weekly review", body: "- [ ] Plan\n- [x] Look back", date });
+
+    expect(await getOverview(collection)).toEqual([
+      {
+        date: "2026-09-29",
+        notes: [
+          {
+            path: "2026-09-29-weekly-review",
+            filename: "2026-09-29-weekly-review.md",
+            title: "Weekly review",
+            todoCount: 2,
+            openTodoCount: 1,
+          },
+        ],
+      },
+    ]);
+    expect(await getNote(collection, "2026-09-29-weekly-review")).toMatchObject({
+      title: "Weekly review",
+      date: "2026-09-29",
+    });
+  });
+
+  it("throws a CollectionPathError for a missing Collection", async () => {
+    await expect(
+      createNote(join(collection, "missing"), { title: "Weekly review", body: "", date }),
+    ).rejects.toBeInstanceOf(CollectionPathError);
+  });
+});

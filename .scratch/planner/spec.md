@@ -8,7 +8,7 @@ I keep my notes and todos as Markdown files in a folder. I edit them in my own e
 
 ## Solution
 
-Planner is a local, read-only web app. It reads my Collection from disk at each page load. The Overview lists all Notes, grouped per Note date, with the newest day first. Each Note shows its Note title and its count of Open Todos. When I click a Note, the Note view shows its rendered content. Links to other Notes and images in the Collection work. When I change a Note in my editor, a browser refresh shows the change.
+Planner is a local web app. It reads my Collection from disk at each page load. The Overview lists all Notes, grouped per Note date, with the newest day first. Each Note shows its Note title and its count of Open Todos. When I click a Note, the Note view shows its rendered content. Links to other Notes and images in the Collection work. When I change a Note in my editor, a browser refresh shows the change. Since ticket 06, I can also create a Note in the browser. The app writes no other change to disk. See `docs/adr/0001-the-app-creates-notes.md`.
 
 ## User Stories
 
@@ -33,7 +33,7 @@ Planner is a local, read-only web app. It reads my Collection from disk at each 
 19. As the user, I want to click a Note in the Overview to open its Note view, so that I can read its full content.
 20. As the user, I want the URL of a Note view to be the path of the Note relative to the Collection, so that the URL is readable and two Notes with the same filename in different subfolders do not collide.
 21. As the user, I want the Note view to render GitHub-flavoured Markdown, including tables, code blocks and checkboxes, so that the Note looks as it does on GitHub.
-22. As the user, I want checkboxes in the Note view to show their state but be disabled, so that the read-only app does not suggest that I can tick them.
+22. As the user, I want checkboxes in the Note view to show their state but be disabled, so that the app does not suggest that I can tick them.
 23. As the user, I want the frontmatter of a Note hidden in the Note view, so that metadata does not clutter the content.
 24. As the user, I want a relative link to another Note to open that Note's Note view, so that I can move between related Notes.
 25. As the user, I want external links to stay unchanged, so that they open the external site.
@@ -49,10 +49,11 @@ Planner is a local, read-only web app. It reads my Collection from disk at each 
 
 - **Stack**: Next.js with the App Router and TypeScript. Server components read the Collection directly from disk at each request. The app has no database, no API layer and no file watcher.
 - **Configuration**: By default, the Collection is the gitignored `collection` folder of the project. The environment variable `COLLECTION_PATH` in `.env.local` can give a different absolute path.
-- **Collection module**: One deep module owns all knowledge of the Collection. The Next.js pages only call it and render its result. Its interface has three operations:
+- **Collection module**: One deep module owns all knowledge of the Collection. The Next.js pages only call it and render its result. Its interface has four operations:
   - **Overview model**: It takes the Collection path. It returns the day groups, newest Note date first, with the Undated Notes as the last group. Each group holds its Notes in filename order. Each Note has its Note title, its Note path and its Open Todo count.
   - **Note by path**: It takes a Note path. It returns the Note title and the Note content rendered to HTML. For a path that is not a Note, or that resolves outside the Collection, it returns "not found".
   - **Asset by path**: It takes a path. It returns the file content and its media type for an image inside the Collection. For a path outside the Collection, it returns "not found".
+  - **Create Note**: It takes the Note title, the body and the Note date. It writes a new Note to the Collection root and returns its Note path. It returns "exists" or "invalid title" on failure. It never overwrites a file. Ticket 06 gives the rules.
 - **Note path**: The path of a Note relative to the Collection, without the `.md` extension, for example `work/2026-09-29-standup`. The Note view URL is `/notes/` followed by the Note path.
 - **Note date**: A `YYYY-MM-DD` prefix at the start of the filename. The Note date is one day.
 - **Note title**: The first `# ` heading in the body after the frontmatter. When the Note has no such heading, the Note title is the filename without the `.md` extension.
@@ -72,7 +73,7 @@ Planner is a local, read-only web app. It reads my Collection from disk at each 
 
 ## Out of Scope
 
-- Creating, editing or deleting Notes, and ticking Todos, in the browser.
+- Editing or deleting Notes, and ticking Todos, in the browser. Ticket 06 moved the creation of a Note into scope.
 - Hosting, authentication and more than one user.
 - Automatic page updates from a file watcher.
 - A Note date from frontmatter or from file-system times.

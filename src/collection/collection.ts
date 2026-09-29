@@ -1,4 +1,4 @@
-import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { extname, isAbsolute, join } from "node:path";
 import type { Root } from "mdast";
 import { countTodos, headingTitle, parseNote, renderNote, type TodoCounts } from "./markdown";
@@ -24,6 +24,8 @@ export type Asset = {
   mediaType: string;
 };
 
+const SLUG_LIMIT = 60;
+
 const IMAGE_MEDIA_TYPES: Record<string, string> = {
   ".avif": "image/avif",
   ".gif": "image/gif",
@@ -33,6 +35,14 @@ const IMAGE_MEDIA_TYPES: Record<string, string> = {
   ".svg": "image/svg+xml",
   ".webp": "image/webp",
 };
+
+export type NewNote = {
+  title: string;
+  body: string;
+  date: string;
+};
+
+export type CreateNoteResult = { path: string } | { reason: "exists" | "invalid title" };
 
 type NoteLocation = {
   folders: string[];
@@ -84,6 +94,42 @@ export async function getAsset(collectionPath: string | undefined, assetPath: st
   // The Collection is read at runtime and is never part of the build output.
   const content = await readFile(/*turbopackIgnore: true*/ file).catch(missingAsNull);
   return content && { content, mediaType };
+}
+
+export async function createNote(
+  collectionPath: string | undefined,
+  { title, body, date }: NewNote,
+): Promise<CreateNoteResult> {
+  const checkedPath = await checkCollectionPath(collectionPath);
+  const trimmedTitle = title.trim();
+  const titleSlug = slug(trimmedTitle);
+  if (/[\r\n]/.test(trimmedTitle) || !titleSlug) return { reason: "invalid title" };
+  const path = `${date}-${titleSlug}`;
+  const normalizedBody = body.replace(/\r\n?/g, "\n").trimEnd();
+  const content = normalizedBody ? `# ${trimmedTitle}\n\n${normalizedBody}\n` : `# ${trimmedTitle}\n`;
+  try {
+    await writeFile(join(checkedPath, `${path}.md`), content, { flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return { reason: "exists" };
+    throw error;
+  }
+  return { path };
+}
+
+// NFKD splits "é" into "e" and a combining mark, but it keeps these letters whole.
+const PLAIN_LETTERS: Record<string, string> = { ß: "ss", æ: "ae", ø: "o", œ: "oe", ł: "l" };
+
+function slug(title: string) {
+  const plain = title
+    .toLowerCase()
+    .replace(/[ßæøœł]/g, (letter) => PLAIN_LETTERS[letter])
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "");
+  const full = plain.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  if (full.length <= SLUG_LIMIT) return full;
+  // The search includes the character after the limit, so a "-" there keeps all 60 characters.
+  const cut = full.slice(0, SLUG_LIMIT + 1).lastIndexOf("-");
+  return full.slice(0, cut > 0 ? cut : SLUG_LIMIT);
 }
 
 async function findNote(collectionPath: string, notePath: string): Promise<NoteLocation | null> {
