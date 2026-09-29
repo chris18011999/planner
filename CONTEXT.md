@@ -4,6 +4,14 @@ A view of a personal collection of Markdown notes and the todos inside them. The
 
 ## Language
 
+**User**:
+A person who signs in with a Google account. Each User has their own Collection.
+_Avoid_: Account, member, profile
+
+**Owner**:
+The User whose Collection holds a Note or an Asset.
+_Avoid_: Author, creator
+
 **Collection**:
 The one folder, and all of its subfolders, that holds the Notes.
 _Avoid_: Vault, library, workspace, notes folder
