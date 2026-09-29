@@ -3,6 +3,8 @@ import { toString } from "mdast-util-to-string";
 import remarkFrontmatter from "remark-frontmatter";
 import remarkGfm from "remark-gfm";
 import remarkParse from "remark-parse";
+import remarkRehype from "remark-rehype";
+import rehypeStringify from "rehype-stringify";
 import { unified } from "unified";
 import { visit } from "unist-util-visit";
 
@@ -32,4 +34,10 @@ export function countTodos(tree: Root): TodoCounts {
     if (!item.checked) openTodoCount++;
   });
   return { openTodoCount, todoCount };
+}
+
+const renderer = unified().use(remarkRehype).use(rehypeStringify);
+
+export function renderNote(tree: Root): string {
+  return renderer.stringify(renderer.runSync(tree));
 }

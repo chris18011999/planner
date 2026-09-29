@@ -1,10 +1,10 @@
+import Link from "next/link";
 import { connection } from "next/server";
-import { CollectionPathError, getOverview, type DayGroup } from "@/collection/collection";
+import { CollectionPathError, getOverview, noteHref, type DayGroup } from "@/collection/collection";
+import { COLLECTION_PATH_VARIABLE, CollectionPathErrorPage } from "./collection-path-error";
 import { fullDate, localToday, monthLabel, relativeDay, shortDate } from "./dates";
 import { FolderBadge } from "./folder-badge";
 import { ProgressRing } from "./progress-ring";
-
-const COLLECTION_PATH_VARIABLE = "COLLECTION_PATH";
 
 export default async function OverviewPage() {
   await connection();
@@ -76,34 +76,20 @@ function DaySection({
       </div>
       <ul className="mt-2 space-y-2">
         {notes.map((note) => (
-          <li
-            key={note.path}
-            className={`flex items-center gap-4 rounded-xl border bg-white px-4 py-3 shadow-sm dark:bg-neutral-900 ${
-              date ? "border-neutral-200 dark:border-neutral-800" : "border-dashed border-neutral-300 dark:border-neutral-700"
-            }`}
-          >
-            <ProgressRing openTodoCount={note.openTodoCount} todoCount={note.todoCount} />
-            <span className="flex-1 font-semibold">{note.title}</span>
-            <FolderBadge notePath={note.path} />
+          <li key={note.path}>
+            <Link
+              href={noteHref(note.path)}
+              className={`flex items-center gap-4 rounded-xl border bg-white px-4 py-3 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:bg-neutral-900 ${
+                date ? "border-neutral-200 dark:border-neutral-800" : "border-dashed border-neutral-300 dark:border-neutral-700"
+              }`}
+            >
+              <ProgressRing openTodoCount={note.openTodoCount} todoCount={note.todoCount} />
+              <span className="flex-1 font-semibold">{note.title}</span>
+              <FolderBadge notePath={note.path} />
+            </Link>
           </li>
         ))}
       </ul>
     </section>
-  );
-}
-
-function CollectionPathErrorPage({ message }: { message: string }) {
-  return (
-    <div className="min-h-screen w-full bg-neutral-50 px-6 py-16 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
-      <main className="mx-auto max-w-3xl rounded-xl border border-red-200 bg-white p-8 shadow-sm dark:border-red-900 dark:bg-neutral-900">
-        <h1 className="text-2xl font-bold">The app cannot read the Collection</h1>
-        <p className="mt-4">{message}</p>
-        <p className="mt-4">
-          Set <code className="font-mono font-semibold">{COLLECTION_PATH_VARIABLE}</code> in{" "}
-          <code className="font-mono">.env.local</code> to the absolute path of your Collection folder. See{" "}
-          <code className="font-mono">.env.example</code>. Then restart the app.
-        </p>
-      </main>
-    </div>
   );
 }

@@ -1,6 +1,7 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { countTodos, headingTitle, parseNote, type TodoCounts } from "./markdown";
+import type { Root } from "mdast";
+import { countTodos, headingTitle, parseNote, renderNote, type TodoCounts } from "./markdown";
 
 export type OverviewNote = TodoCounts & {
   path: string;
@@ -11,6 +12,11 @@ export type OverviewNote = TodoCounts & {
 export type DayGroup = {
   date: string | null;
   notes: OverviewNote[];
+};
+
+export type Note = OverviewNote & {
+  date: string | null;
+  html: string;
 };
 
 type NoteLocation = {
@@ -41,18 +47,59 @@ export async function getOverview(collectionPath: string | undefined): Promise<D
   return groups;
 }
 
+export async function getNote(collectionPath: string | undefined, notePath: string): Promise<Note | null> {
+  const checkedPath = await checkCollectionPath(collectionPath);
+  const location = await findNote(checkedPath, notePath);
+  if (!location) return null;
+  const tree = await readNoteTree(checkedPath, location);
+  if (!tree) return null;
+  return {
+    ...overviewNote(location, tree),
+    date: noteDate(location.filename),
+    html: renderNote(tree),
+  };
+}
+
+// The Overview lists no dot-files and no symbolic links. findNote accepts only a path that the Overview can give.
+// The real path must equal the plain join. This check rejects "..", symbolic links and a case that differs from the disk.
+async function findNote(collectionPath: string, notePath: string): Promise<NoteLocation | null> {
+  const segments = notePath.split("/");
+  if (segments.some((segment) => !segment || segment.startsWith("."))) return null;
+  const location = { folders: segments.slice(0, -1), filename: `${segments.at(-1)}.md` };
+  const [realCollection, realFile] = await Promise.all([
+    realpath(collectionPath),
+    realpath(join(collectionPath, ...location.folders, location.filename)).catch(() => null),
+  ]);
+  if (realFile !== join(realCollection, ...location.folders, location.filename)) return null;
+  const file = await stat(realFile).catch(() => null);
+  return file?.isFile() ? location : null;
+}
+
+export function noteHref(notePath: string): string {
+  return `/notes/${notePath.split("/").map(encodeURIComponent).join("/")}`;
+}
+
 async function readOverviewNote(
   collectionPath: string,
   { folders, filename }: NoteLocation,
 ): Promise<OverviewNote | null> {
+  const tree = await readNoteTree(collectionPath, { folders, filename });
+  return tree && overviewNote({ folders, filename }, tree);
+}
+
+async function readNoteTree(collectionPath: string, { folders, filename }: NoteLocation): Promise<Root | null> {
+  const markdown = await readFile(join(collectionPath, ...folders, filename), "utf8").catch(missingAsNull);
+  return markdown === null ? null : parseNote(markdown);
+}
+
+// Editors that save through a temporary file and a rename can remove a Note between the lookup and readFile.
+function missingAsNull(error: NodeJS.ErrnoException): null {
+  if (error?.code === "ENOENT") return null;
+  throw error;
+}
+
+function overviewNote({ folders, filename }: NoteLocation, tree: Root): OverviewNote {
   const name = filename.replace(/\.md$/, "");
-  const markdown = await readFile(join(collectionPath, ...folders, filename), "utf8").catch((error) => {
-    // Editors that save through a temporary file and a rename can remove a Note between readdir and readFile.
-    if (error?.code === "ENOENT") return null;
-    throw error;
-  });
-  if (markdown === null) return null;
-  const tree = parseNote(markdown);
   return {
     path: [...folders, name].join("/"),
     filename,

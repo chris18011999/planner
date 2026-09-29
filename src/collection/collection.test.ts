@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CollectionPathError, getOverview } from "./collection";
+import { CollectionPathError, getNote, getOverview } from "./collection";
 
 let collection: string;
 
@@ -227,5 +227,110 @@ describe("getOverview", () => {
 
       expect(await onlyNote()).toMatchObject({ openTodoCount: 0, todoCount: 0 });
     });
+  });
+});
+
+describe("getNote", () => {
+  it("gives the Note title and the Note content as HTML for a Note path", async () => {
+    await addFile("work/2026-09-29-standup.md", "# Standup\n\nSome *text*.");
+
+    expect(await getNote(collection, "work/2026-09-29-standup")).toMatchObject({
+      path: "work/2026-09-29-standup",
+      filename: "2026-09-29-standup.md",
+      date: "2026-09-29",
+      title: "Standup",
+      html: "<h1>Standup</h1>\n<p>Some <em>text</em>.</p>",
+    });
+  });
+
+  it("renders GFM tables, code blocks and task lists", async () => {
+    await addFile(
+      "ideas.md",
+      ["| Day | Plan |", "| --- | :-: |", "| Mon | Gym |", "", "```ts", "const a = 1 < 2;", "```"].join("\n"),
+    );
+
+    const html = (await getNote(collection, "ideas"))?.html ?? "";
+
+    expect(html).toContain("<table>");
+    expect(html).toMatch(/<th[^>]*>Plan<\/th>/);
+    expect(html).toMatch(/<td[^>]*>Gym<\/td>/);
+    expect(html).toMatch(/<pre><code class="language-ts">const a = 1 (&lt;|&#x3C;) 2;/);
+  });
+
+  it("shows the state of each checkbox and disables it", async () => {
+    await addFile("ideas.md", ["- [ ] Open", "- [x] Done", "  - [ ] Nested"].join("\n"));
+
+    const html = (await getNote(collection, "ideas"))?.html ?? "";
+
+    expect(html.match(/<input[^>]*>/g)).toEqual([
+      '<input type="checkbox" disabled>',
+      '<input type="checkbox" checked disabled>',
+      '<input type="checkbox" disabled>',
+    ]);
+  });
+
+  it("does not show YAML or TOML frontmatter", async () => {
+    await addFile("yaml.md", ["---", "title: Hidden", "---", "Body"].join("\n"));
+    await addFile("toml.md", ["+++", "title = 'Hidden'", "+++", "Body"].join("\n"));
+
+    expect((await getNote(collection, "yaml"))?.html).toBe("<p>Body</p>");
+    expect((await getNote(collection, "toml"))?.html).toBe("<p>Body</p>");
+  });
+
+  it("gives the Todo counts, and no Note date for an Undated Note", async () => {
+    await addFile("ideas.md", ["- [ ] Open", "- [x] Done"].join("\n"));
+
+    expect(await getNote(collection, "ideas")).toMatchObject({ date: null, openTodoCount: 1, todoCount: 2 });
+  });
+
+  it("shows a change to a Note at the next call", async () => {
+    await addFile("ideas.md", "Before");
+    await getNote(collection, "ideas");
+
+    await addFile("ideas.md", "After");
+
+    expect((await getNote(collection, "ideas"))?.html).toBe("<p>After</p>");
+  });
+
+  it.each([
+    ["a missing Note", "work/2026-09-30-missing"],
+    ["a folder", "work"],
+    ["a folder with a .md name", "archive"],
+    ["a file that is not .md", "work/diagram.png"],
+    ["the .md extension", "work/2026-09-29-standup.md"],
+    ["an empty path", ""],
+    ["a trailing slash", "work/2026-09-29-standup/"],
+    ["a Note in a dot-folder", ".obsidian/2026-09-29-workspace"],
+    ["a dot-file Note", "work/.2026-09-29-hidden"],
+    ["a parent segment that leaves the Collection", "../outside"],
+    ["a parent segment inside the path", "work/../../outside"],
+    ["a parent segment that stays inside", "work/../work/2026-09-29-standup"],
+    ["a current-folder segment", "./work/2026-09-29-standup"],
+    ["an absolute path", "/etc/hosts"],
+    ["a backslash", "work\\2026-09-29-standup"],
+    ["a null byte", "work/2026-09-29-standup\0"],
+  ])("gives not found for %s", async (_, notePath) => {
+    await addFile("notes/work/2026-09-29-standup.md", "# Standup");
+    await addFile("notes/work/diagram.png");
+    await addFile("notes/archive.md/2026-09-29-old.md");
+    await addFile("notes/.obsidian/2026-09-29-workspace.md");
+    await addFile("notes/work/.2026-09-29-hidden.md");
+    await addFile("outside.md", "# Outside");
+
+    expect(await getNote(join(collection, "notes"), notePath)).toBeNull();
+  });
+
+  it("gives not found for a symbolic link that leaves the Collection", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "planner-outside-"));
+    try {
+      await writeFile(join(outside, "secret.md"), "# Secret");
+      await symlink(join(outside, "secret.md"), join(collection, "secret.md"));
+      await symlink(outside, join(collection, "linked"));
+
+      expect(await getNote(collection, "secret")).toBeNull();
+      expect(await getNote(collection, "linked/secret")).toBeNull();
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 });
