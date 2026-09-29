@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import { CollectionPathError, getNote, type Note } from "@/collection/collection";
+import { decodeUrlSegments } from "@/collection/urls";
 import { collectionPath } from "../../collection-path";
 import { CollectionPathErrorPage } from "../../collection-path-error";
 import { fullDate, localToday, relativeDay } from "../../dates";
@@ -13,7 +14,7 @@ const NOTE_CONTENT_CLASSES =
 
 export default async function NoteViewPage({ params }: PageProps<"/notes/[...path]">) {
   await connection();
-  const notePath = decodeNotePath((await params).path);
+  const notePath = decodeUrlSegments((await params).path);
   if (notePath === null) notFound();
   let note: Note | null;
   try {
@@ -63,13 +64,4 @@ export default async function NoteViewPage({ params }: PageProps<"/notes/[...pat
       </main>
     </div>
   );
-}
-
-// Next.js passes catch-all segments still percent-encoded.
-function decodeNotePath(segments: string[]): string | null {
-  try {
-    return segments.map(decodeURIComponent).join("/");
-  } catch {
-    return null;
-  }
 }

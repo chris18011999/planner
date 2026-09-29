@@ -9,8 +9,12 @@ The one folder, and all of its subfolders, that holds the Notes.
 _Avoid_: Vault, library, workspace, notes folder
 
 **Note**:
-One Markdown file in the Collection. It is the only kind of file the app knows.
+One Markdown file in the Collection. It is the only kind of file that the Overview lists.
 _Avoid_: Document, entry, page, file
+
+**Asset**:
+An image file in the Collection that a Note shows. The app serves it at its asset URL.
+_Avoid_: Attachment, media, upload
 
 **Note title**:
 The first `# ` heading of a Note, or its filename when the Note has no such heading.

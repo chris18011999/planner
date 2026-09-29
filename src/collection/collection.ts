@@ -1,5 +1,5 @@
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { extname, isAbsolute, join } from "node:path";
 import type { Root } from "mdast";
 import { countTodos, headingTitle, parseNote, renderNote, type TodoCounts } from "./markdown";
 
@@ -17,6 +17,21 @@ export type DayGroup = {
 export type Note = OverviewNote & {
   date: string | null;
   html: string;
+};
+
+export type Asset = {
+  content: Buffer;
+  mediaType: string;
+};
+
+const IMAGE_MEDIA_TYPES: Record<string, string> = {
+  ".avif": "image/avif",
+  ".gif": "image/gif",
+  ".jpeg": "image/jpeg",
+  ".jpg": "image/jpeg",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".webp": "image/webp",
 };
 
 type NoteLocation = {
@@ -56,27 +71,39 @@ export async function getNote(collectionPath: string | undefined, notePath: stri
   return {
     ...overviewNote(location, tree),
     date: noteDate(location.filename),
-    html: renderNote(tree),
+    html: renderNote(tree, location.folders),
   };
 }
 
-// The Overview lists no dot-files and no symbolic links. findNote accepts only a path that the Overview can give.
-// The real path must equal the plain join. This check rejects "..", symbolic links and a case that differs from the disk.
-async function findNote(collectionPath: string, notePath: string): Promise<NoteLocation | null> {
-  const segments = notePath.split("/");
-  if (segments.some((segment) => !segment || segment.startsWith("."))) return null;
-  const location = { folders: segments.slice(0, -1), filename: `${segments.at(-1)}.md` };
-  const [realCollection, realFile] = await Promise.all([
-    realpath(collectionPath),
-    realpath(join(collectionPath, ...location.folders, location.filename)).catch(() => null),
-  ]);
-  if (realFile !== join(realCollection, ...location.folders, location.filename)) return null;
-  const file = await stat(realFile).catch(() => null);
-  return file?.isFile() ? location : null;
+export async function getAsset(collectionPath: string | undefined, assetPath: string): Promise<Asset | null> {
+  const checkedPath = await checkCollectionPath(collectionPath);
+  const mediaType = IMAGE_MEDIA_TYPES[extname(assetPath).toLowerCase()];
+  if (!mediaType) return null;
+  const file = await findFile(checkedPath, assetPath.split("/"));
+  if (!file) return null;
+  // The Collection is read at runtime and is never part of the build output.
+  const content = await readFile(/*turbopackIgnore: true*/ file).catch(missingAsNull);
+  return content && { content, mediaType };
 }
 
-export function noteHref(notePath: string): string {
-  return `/notes/${notePath.split("/").map(encodeURIComponent).join("/")}`;
+async function findNote(collectionPath: string, notePath: string): Promise<NoteLocation | null> {
+  const segments = notePath.split("/");
+  const location = { folders: segments.slice(0, -1), filename: `${segments.at(-1)}.md` };
+  const file = await findFile(collectionPath, [...location.folders, location.filename]);
+  return file ? location : null;
+}
+
+// The Overview lists no dot-files and no symbolic links. findFile rejects them too, for Notes and for Assets.
+// The real path must equal the plain join. This check rejects "..", symbolic links and a case that differs from the disk.
+async function findFile(collectionPath: string, segments: string[]): Promise<string | null> {
+  if (segments.some((segment) => !segment || segment.startsWith("."))) return null;
+  const [realCollection, realFile] = await Promise.all([
+    realpath(collectionPath),
+    realpath(join(collectionPath, ...segments)).catch(() => null),
+  ]);
+  if (realFile !== join(realCollection, ...segments)) return null;
+  const file = await stat(realFile).catch(() => null);
+  return file?.isFile() ? realFile : null;
 }
 
 async function readOverviewNote(

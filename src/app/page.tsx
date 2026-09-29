@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { connection } from "next/server";
-import { CollectionPathError, getOverview, noteHref, type DayGroup } from "@/collection/collection";
+import { CollectionPathError, getOverview, type DayGroup } from "@/collection/collection";
+import { noteHref } from "@/collection/urls";
 import { collectionPath } from "./collection-path";
 import { CollectionPathErrorPage } from "./collection-path-error";
 import { fullDate, localToday, monthLabel, relativeDay, shortDate } from "./dates";

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CollectionPathError, getNote, getOverview } from "./collection";
+import { CollectionPathError, getAsset, getNote, getOverview } from "./collection";
 
 let collection: string;
 
@@ -239,7 +239,7 @@ describe("getNote", () => {
       filename: "2026-09-29-standup.md",
       date: "2026-09-29",
       title: "Standup",
-      html: "<h1>Standup</h1>\n<p>Some <em>text</em>.</p>",
+      html: "<h1 id=\"user-content-standup\">Standup</h1>\n<p>Some <em>text</em>.</p>",
     });
   });
 
@@ -334,3 +334,195 @@ describe("getNote", () => {
     }
   });
 });
+
+describe("links and images in a Note", () => {
+  async function html(notePath: string) {
+    return (await getNote(collection, notePath))?.html ?? "";
+  }
+
+  it("rewrites a relative link to a Note to its Note view URL, from the folder of the Note", async () => {
+    await addFile(
+      "work/2026-09-29-standup.md",
+      ["[Retro](2026-09-26-retro.md)", "[Books](../reading/Books.md)", "[Plan](./deep/plan.md#next-week)"].join("\n\n"),
+    );
+
+    expect(await html("work/2026-09-29-standup")).toBe(
+      [
+        '<p><a href="/notes/work/2026-09-26-retro">Retro</a></p>',
+        '<p><a href="/notes/reading/Books">Books</a></p>',
+        '<p><a href="/notes/work/deep/plan#user-content-next-week">Plan</a></p>',
+      ].join("\n"),
+    );
+  });
+
+  it("keeps external links and anchor links unchanged", async () => {
+    await addFile(
+      "ideas.md",
+      [
+        "[Docs](https://example.com/guide.md)",
+        "[Protocol-relative](//example.com/a.md)",
+        "[Mail](mailto:someone@example.com)",
+        "[Section](#todos)",
+        "<https://example.com>",
+      ].join("\n\n"),
+    );
+
+    expect(await html("ideas")).toBe(
+      [
+        '<p><a href="https://example.com/guide.md">Docs</a></p>',
+        '<p><a href="//example.com/a.md">Protocol-relative</a></p>',
+        '<p><a href="mailto:someone@example.com">Mail</a></p>',
+        '<p><a href="#user-content-todos">Section</a></p>',
+        '<p><a href="https://example.com">https://example.com</a></p>',
+      ].join("\n"),
+    );
+  });
+
+  it("rewrites a relative image source to the asset URL, from the folder of the Note", async () => {
+    await addFile(
+      "work/2026-09-29-standup.md",
+      ["![Diagram](../images/diagram.png)", "![Photo](<my photo.jpg>)", "![Chart](chart%20v2.svg)"].join("\n\n"),
+    );
+
+    expect(await html("work/2026-09-29-standup")).toBe(
+      [
+        '<p><img src="/assets/images/diagram.png" alt="Diagram"></p>',
+        '<p><img src="/assets/work/my%20photo.jpg" alt="Photo"></p>',
+        '<p><img src="/assets/work/chart%20v2.svg" alt="Chart"></p>',
+      ].join("\n"),
+    );
+  });
+
+  it("decodes a percent-encoded link to a Note before it rewrites it", async () => {
+    await addFile("ideas.md", ["[One](my%20note.md)", "[Two](<my note.md>)"].join("\n\n"));
+
+    expect(await html("ideas")).toBe(
+      ['<p><a href="/notes/my%20note">One</a></p>', '<p><a href="/notes/my%20note">Two</a></p>'].join("\n"),
+    );
+  });
+
+  it("resolves a link that starts with / from the Collection root", async () => {
+    await addFile("work/2026-09-29-standup.md", ["[Books](/reading/Books.md)", "![Logo](/images/logo.png)"].join("\n\n"));
+
+    expect(await html("work/2026-09-29-standup")).toBe(
+      ['<p><a href="/notes/reading/Books">Books</a></p>', '<p><img src="/assets/images/logo.png" alt="Logo"></p>'].join(
+        "\n",
+      ),
+    );
+  });
+
+  it("keeps only the text of a link or image that leaves the Collection, or that uses an unsafe scheme", async () => {
+    await addFile(
+      "work/2026-09-29-standup.md",
+      [
+        "[Outside](../../outside.md)",
+        "![Secret](../../secret.png)",
+        "[Script](javascript:alert(1))",
+        "[Upper](JavaScript:alert(1))",
+        "[Data](data:text/html,x)",
+        "[Ref][bad]",
+        "",
+        "[bad]: ../../x.md",
+      ].join("\n\n"),
+    );
+
+    expect(await html("work/2026-09-29-standup")).toBe(
+      ["<p>Outside</p>", "<p>Secret</p>", "<p>Script</p>", "<p>Upper</p>", "<p>Data</p>", "<p>Ref</p>"].join("\n"),
+    );
+  });
+
+  it("rewrites a reference-style link and image", async () => {
+    await addFile("work/2026-09-29-standup.md", ["[Retro][r] ![Chart][c]", "", "[r]: retro.md", "[c]: chart.png"].join("\n"));
+
+    expect(await html("work/2026-09-29-standup")).toBe(
+      '<p><a href="/notes/work/retro">Retro</a> <img src="/assets/work/chart.png" alt="Chart"></p>',
+    );
+  });
+
+  it("gives each heading a prefixed GitHub-style id, and points anchor links to it", async () => {
+    await addFile("ideas.md", ["## Open Todos", "", "## Open Todos", "", "[Jump](#open-todos-1)"].join("\n"));
+
+    expect(await html("ideas")).toBe(
+      [
+        '<h2 id="user-content-open-todos">Open Todos</h2>',
+        '<h2 id="user-content-open-todos-1">Open Todos</h2>',
+        '<p><a href="#user-content-open-todos-1">Jump</a></p>',
+      ].join("\n"),
+    );
+  });
+
+  it("keeps other external schemes, drops a query string and keeps an empty link", async () => {
+    await addFile(
+      "work/2026-09-29-standup.md",
+      ["[Vault](obsidian://open?vault=x)", "[Retro](retro.md?v=2#top)", "[Empty]()", "[Query](?a=1)"].join("\n\n"),
+    );
+
+    expect(await html("work/2026-09-29-standup")).toBe(
+      [
+        '<p><a href="obsidian://open?vault=x">Vault</a></p>',
+        '<p><a href="/notes/work/retro#user-content-top">Retro</a></p>',
+        '<p><a href="">Empty</a></p>',
+        '<p><a href="?a=1">Query</a></p>',
+      ].join("\n"),
+    );
+  });
+
+  it("keeps only the text of a link that leaves the Collection from the root or through an encoded ..", async () => {
+    await addFile("work/2026-09-29-standup.md", ["[Root](/../../x.md)", "[Encoded](%2E%2E/%2E%2E/x.md)"].join("\n\n"));
+
+    expect(await html("work/2026-09-29-standup")).toBe(["<p>Root</p>", "<p>Encoded</p>"].join("\n"));
+  });
+});
+
+describe("getAsset", () => {
+  it("gives the content and the media type of an image in the Collection", async () => {
+    await addFile("work/images/diagram.png", "png bytes");
+    await addFile("photo.JPG", "jpg bytes");
+    await addFile("my chart.svg", "<svg/>");
+
+    expect(await getAsset(collection, "work/images/diagram.png")).toEqual({
+      content: Buffer.from("png bytes"),
+      mediaType: "image/png",
+    });
+    expect(await getAsset(collection, "photo.JPG")).toMatchObject({ mediaType: "image/jpeg" });
+    expect(await getAsset(collection, "my chart.svg")).toMatchObject({ mediaType: "image/svg+xml" });
+  });
+
+  it.each([
+    ["a missing image", "work/missing.png"],
+    ["a Note", "work/2026-09-29-standup.md"],
+    ["a file that is not an image", "work/report.pdf"],
+    ["a folder with an image name", "work/folder.png"],
+    ["an image in a dot-folder", ".obsidian/icon.png"],
+    ["a parent segment that leaves the Collection", "../outside.png"],
+    ["a parent segment inside the path", "work/../../outside.png"],
+    ["a current-folder segment", "./work/diagram.png"],
+    ["an absolute path", "/etc/diagram.png"],
+    ["an empty path", ""],
+    ["a null byte", "work/diagram.png\0.png"],
+  ])("gives not found for %s", async (_, assetPath) => {
+    await addFile("notes/work/diagram.png", "png bytes");
+    await addFile("notes/work/2026-09-29-standup.md", "# Standup");
+    await addFile("notes/work/report.pdf");
+    await addFile("notes/work/folder.png/inside.png");
+    await addFile("notes/.obsidian/icon.png");
+    await addFile("outside.png", "secret");
+
+    expect(await getAsset(join(collection, "notes"), assetPath)).toBeNull();
+  });
+
+  it("gives not found for a symbolic link that leaves the Collection", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "planner-outside-"));
+    try {
+      await writeFile(join(outside, "secret.png"), "secret");
+      await symlink(join(outside, "secret.png"), join(collection, "secret.png"));
+      await symlink(outside, join(collection, "linked"));
+
+      expect(await getAsset(collection, "secret.png")).toBeNull();
+      expect(await getAsset(collection, "linked/secret.png")).toBeNull();
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+});
+

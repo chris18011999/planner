@@ -58,7 +58,7 @@ Planner is a local, read-only web app. It reads my Collection from disk at each 
 - **Note title**: The first `# ` heading in the body after the frontmatter. When the Note has no such heading, the Note title is the filename without the `.md` extension.
 - **Open Todo count**: The count of unchecked GFM task-list items at all nesting levels. The count comes from the parsed Markdown tree, so a checkbox inside a code block does not count.
 - **Markdown rendering**: GitHub-flavoured Markdown. The renderer strips the frontmatter. Task-list checkboxes render disabled.
-- **Link rewriting**: The renderer resolves a relative link to a `.md` file against the folder of the current Note, and rewrites it to that Note's Note view URL. It rewrites a relative image source to the asset URL. It does not change external links or anchor links.
+- **Link rewriting**: The renderer resolves a relative link to a `.md` file against the folder of the current Note, and rewrites it to that Note's Note view URL. It rewrites a relative image source to the asset URL. It does not change external links. It prefixes anchor links and heading ids with `user-content-`, as GitHub does.
 - **Path containment**: The Collection module resolves every requested path and rejects it when it does not stay inside the Collection. This applies to Note by path and to Asset by path.
 - **Skipped files**: The module skips dot-files and dot-folders at every level. It treats only `.md` files as Notes.
 
